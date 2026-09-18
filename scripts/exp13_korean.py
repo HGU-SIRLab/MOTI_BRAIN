@@ -49,24 +49,24 @@ def find(stem: str) -> Path | None:
 def to_pcm16(src: Path) -> bytes:
     """Any input format -> 16kHz mono PCM16 WAV bytes."""
     out = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(src), "-ac", "1", "-ar", "16000",
-         "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
+        ["ffmpeg", "-v", "error", "-i", str(src), "-map", "0:a:0", "-vn",
+         "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
         check=True, capture_output=True).stdout
     return out
 
 
 def duration(src: Path) -> float:
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(src)], check=True, capture_output=True).stdout
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "format=duration", "-of", "csv=p=0", str(src)], check=True, capture_output=True).stdout
     return float(out.decode().strip())
 
 
 def slice_pcm16(src: Path, start: float, length: float) -> bytes:
     return subprocess.run(
         ["ffmpeg", "-v", "error", "-ss", str(start), "-t", str(length),
-         "-i", str(src), "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-         "-f", "wav", "pipe:1"],
+         "-i", str(src), "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000",
+         "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"],
         check=True, capture_output=True).stdout
 
 
@@ -92,6 +92,64 @@ def ask(parts: list) -> tuple[str, int]:
                 d["usage"]["prompt_tokens"])
     except urllib.error.HTTPError as e:
         return f"[HTTP {e.code}] {e.read().decode()[:200]}", 0
+
+
+def probe(src: Path) -> dict:
+    meta = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=codec_name,sample_rate,channels,bit_rate", "-of", "json", str(src)],
+        check=True, capture_output=True).stdout
+    st = (json.loads(meta).get("streams") or [{}])[0]
+    stats = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(src), "-map", "0:a:0",
+         "-af", "astats=metadata=1:reset=0", "-f", "null", "-"],
+        capture_output=True).stderr.decode(errors="replace")
+    peak = rms = None
+    for line in stats.splitlines():
+        if "Peak level dB" in line and peak is None:
+            peak = line.split(":")[-1].strip()
+        elif "RMS level dB" in line and rms is None:
+            rms = line.split(":")[-1].strip()
+    return {"codec": st.get("codec_name"), "rate": st.get("sample_rate"),
+            "ch": st.get("channels"), "bitrate": st.get("bit_rate"),
+            "peak": peak, "rms": rms}
+
+
+def part_0() -> None:
+    """Recording sanity check.
+
+    Phones commonly apply AGC, noise suppression and dynamic-range compression,
+    and AAC discards low-energy spectral detail — which is exactly where the
+    breathiness and micro-tremor of c2_suppressed live. If that processing
+    flattened the prosody, comparison C would return a false negative: the tone
+    channel could be working while we conclude it is not. Near-identical RMS
+    across the c-set is the warning sign to look for."""
+    print("=" * 72)
+    print("0. 녹음 상태 점검 — 톤 검증이 유효한 조건인지")
+    print("=" * 72)
+    print(f"{'파일':<18} {'코덱':<8} {'rate':>6} {'ch':>3} {'peak dB':>9} {'RMS dB':>9}")
+    c_rms = []
+    for stem in list(TRANSCRIPTS) + ["b1_long"] + TONE_SET:
+        src = find(stem)
+        if src is None:
+            print(f"{stem:<18} (없음)")
+            continue
+        p = probe(src)
+        print(f"{src.name:<18} {str(p['codec']):<8} {str(p['rate']):>6} "
+              f"{str(p['ch']):>3} {str(p['peak']):>9} {str(p['rms']):>9}")
+        if stem in TONE_SET and p["rms"]:
+            try:
+                c_rms.append(float(p["rms"]))
+            except ValueError:
+                pass
+    if len(c_rms) == len(TONE_SET):
+        spread = max(c_rms) - min(c_rms)
+        print(f"\nc세트 RMS 편차 {spread:.1f} dB", end="  ")
+        if spread < 1.5:
+            print("⚠️ 거의 동일 — 휴대폰 AGC/압축이 톤 dynamics를 평탄화했을 가능성. "
+                  "C 결과가 '차이 없음'으로 나오면 모델 한계가 아니라 녹음 문제일 수 있다.")
+        else:
+            print("→ 톤별 dynamics가 살아있음. C 검증 조건 양호.")
 
 
 def part_a() -> None:
@@ -174,6 +232,7 @@ def main() -> None:
     if not DATA.is_dir() or not any(DATA.iterdir()):
         print(f"{DATA}에 녹음 파일이 없습니다. docs/exp13_recordings.md 참고.")
         sys.exit(1)
+    part_0()
     part_a()
     part_b()
     part_c()
