@@ -480,9 +480,13 @@ LLM leg: the vLLM server is OpenAI-compatible, so the LLM call is a plain HTTP r
 ### 11.1 STT leg
 Run STT only on VAD-delimited segments (not continuously), and keep the §11.0-3 compensation buffer.
 
-**`[MANDATORY]` Pass raw 16-bit PCM to the STT model — never a WAV container.** (v5 stated this as Pipecat's
-`wants_wav_segments=False`; the underlying requirement is unchanged and framework-independent. WAV wrapping
-exists for cloud upload APIs, which we do not use.)
+**v6 correction — this rule no longer applies where v5 put it.** There is no separate STT model any more
+(§12.5); audio goes to E4B through vLLM's OpenAI-compatible `input_audio` field, which *requires* a
+container and takes base64 WAV. The rule's original point was to avoid pointless wrapping added for cloud
+upload APIs — but that request shape is now our own local transport, so the wrapping is not optional.
+
+Where the rule still means something is **the robot↔brain wire (§11.5): send raw PCM16 frames there, not
+WAV.** The brain wraps into WAV once, at the vLLM call boundary. See §20 rule 4.
 
 ### 11.2 TTS leg
 Synthesize per sentence (§11.0-2) and stream audio frames out as they are produced. Must expose: start,
@@ -842,6 +846,28 @@ Everything below is `[UNVERIFIED]` — estimates only. Replace with EXP-8.
 Bandwidth, for reference: 16kHz mono PCM16 upstream ≈ 256 kbps, 24kHz downstream ≈ 384 kbps. Not a
 constraint on any realistic link, including Tailscale.
 
+### 13.2 `[MEASURED]` First end-to-end voice-to-voice (2026-09-19, Stage 4 spine)
+
+Real recording in (`a1_tired.wav`, 9.0s of the developer's speech), synthesized speech out.
+Persona cached, Piper loaded, `brain/test_pipeline.py`.
+
+| Stage | Time from turn end |
+|---|---|
+| first LLM token | **0.20 s** |
+| **first audio out** | **1.47 s** |
+| user transcript (off the critical path) | 3.55 s |
+
+**Beats the §4.2 reference point**: `duet` reports 2.169s from final speech end to first server
+audio; this is 1.47s on a Jetson. Not comparable to Gemini Live, but the §13 reference floor for
+small-device pipelines (2–3s full loop) is cleared.
+
+**Found by measuring, not by reasoning**: the first version ran transcription *before* generating and
+cost **3.96s** to first audio — 2.4s of pure silence waiting for a transcript that only the
+conversation log needs. Running it alongside the reply and collecting it before `done` (which is when
+`launcher.py` actually reads it) cut time-to-first-audio 2.7×. Transcription itself got *slower*
+(2.38 → 3.55s, it now competes for the GPU) and that is the right trade: it is off the path the user
+waits on.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
@@ -1016,7 +1042,7 @@ starting the next; do not run parallel blockers just to save days we do not need
 1. Never present `[UNVERIFIED]` items as measured fact — in code comments, commits, or reports.
 2. Never enable Gemma 4 thinking mode in any code path.
 3. Always stream LLM and TTS output.
-4. **Pass raw 16-bit PCM to the STT model — never a WAV container.** (v6: generalized from the Pipecat-specific `wants_wav_segments=False`, since Pipecat is no longer used. The requirement is the same.)
+4. **Send raw PCM16 on the robot↔brain wire; wrap in WAV only at the vLLM call.** (v5 said "never a WAV container" for a local STT model that no longer exists — vLLM's `input_audio` requires the container. §11.1 explains the correction.)
 5. Instrument latency at every stage from commit one — EXP-8 is the primary deliverable and retrofitting is painful.
 6. When a benchmark contradicts vendor guidance, trust the measurement and record both.
 7. Still flag GPL dependencies explicitly when introducing them. (v6: GPL no longer *blocks* anything — §1 confirms research-only use, so Piper is reinstated — but the flag must stay so that a future decision to distribute can find them. §15 names Piper and EXAONE as the two that would need swapping.)
