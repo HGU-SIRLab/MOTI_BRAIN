@@ -25,6 +25,10 @@ docker run -d --name "$NAME" --runtime=nvidia --network host \
     --reasoning-parser gemma4 \
     --tool-call-parser gemma4
 
-echo "기동 중. 첫 실행은 torch.compile 때문에 오래 걸리고, 이후는 위 캐시를 재사용한다."
+# 기동에 ~33분 걸린다. 내역(실측): 가중치 읽기 3.8s, torch.compile 85s,
+# 엔진 init 139s, 그리고 "model loading" 단계에서 설명 안 되는 1674s(28분). 원인 미규명(Q17).
+# 캐시는 설정별로 키가 갈리므로 플래그를 바꾸면 컴파일분(85s)만 다시 낸다.
+# 실질적 대응: 서버를 재시작하지 않는다 — 뇌는 원래 상시 가동 서버다(§1).
+echo "기동 중 (~33분 소요, 대부분 model loading 단계)."
 echo "준비 확인:  curl -sf http://localhost:8000/v1/models"
 echo "로그:       docker logs -f $NAME"

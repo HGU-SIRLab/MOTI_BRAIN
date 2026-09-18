@@ -426,6 +426,7 @@ LLM leg: the vLLM server is OpenAI-compatible, so the LLM call is a plain HTTP r
 | 2 | **Sentence-level TTS chunking** — cut the LLM stream at sentence boundaries and synthesize per sentence | Without it, TTS waits for the whole response and first-audio latency collapses. **Korean needs sentence-final endings (다/까/요/죠) checked together with punctuation** — punctuation alone under-segments Korean. |
 | 3 | **VAD-detection-lag compensation ring buffer** — keep a small rolling buffer of audio from *before* VAD fired | The first syllable of every utterance is clipped. |
 | 4 | **Cancellation propagation** — on interrupt, cancel *both* LLM generation and TTS synthesis | Orphaned tasks keep producing audio/tokens for a turn the user abandoned. Use asyncio task cancellation, and isolate TTS so a mid-synthesis abort cannot corrupt the next turn. |
+| 5 | **Split audio into ≤30s clips before sending** (only if EXP-13 wins and audio goes to the model directly) | Measured in §12.3: a longer clip is truncated **silently** — no error, no warning, nothing in the response reveals the loss. A user talking for 45s loses their last 15s and nobody ever finds out. |
 
 ### 11.1 STT leg
 Run STT only on VAD-delimited segments (not continuously), and keep the §11.0-3 compensation buffer.
@@ -562,6 +563,57 @@ survives. **Test this explicitly in EXP-13 before invoking the hybrid/SER-only l
 
 **Prefill grows → TTFT grows** remains true and is criterion 2 by another route: a 30s utterance adds 750
 prefill tokens.
+
+### 12.3 `[MEASURED]` EXP-13 partial result — 3 of 4 criteria cleared without recordings
+
+Run with `scripts/probe_audio.py` using generated tones. Tones cannot test comprehension, but they fully
+test the audio *path*, token accounting, and the ceiling — so criteria 2, 3 and 4 were decided before any
+Korean speech existed. Server: E4B bf16, vLLM 0.19.0, persona already prefix-cached.
+
+**The audio path works with zero extra code.** vLLM's OpenAI endpoint accepts `input_audio` (base64 WAV)
+for E4B and the model describes the sound correctly. No patch, no custom serving.
+
+| Clip | prompt_tokens | audio tokens | tok/s |
+|---|---|---|---|
+| 5s | 146 | 127 | 25.4 |
+| 10s | 271 | 252 | 25.2 |
+| 30s | 771 | 752 | 25.1 |
+| **45s** | **771** | **752** | — |
+
+**Criterion 2 — TTFT. Passes.** Measured with the real persona cached:
+
+| Request | TTFT | prompt_tokens |
+|---|---|---|
+| text only | 0.182 s | 18,364 |
+| + 10s audio | 0.473 s | 18,616 |
+| + 30s audio | 1.008 s | 19,116 |
+
+Audio prefill costs roughly **29 ms per second of speech**. A typical 5–10s turn adds 0.15–0.29s, keeping
+TTFT under 0.5s. Only a worst-case 30s turn pushes past the 0.7s threshold, at 1.0s. For comparison the
+Whisper path must *finish transcribing before the LLM can start at all*, and §6.1 cites faster-whisper
+needing seconds for a 20s clip on Orin-class hardware — so audio-direct is very likely the faster path,
+not the slower one. Confirm against a real Whisper run only if EXP-13 is otherwise killed.
+
+**Criterion 3 — the 30s ceiling. Mitigated, but it hides a trap.**
+
+Two findings, and the second is the important one:
+1. **Multi-clip segmentation works.** Two 20s parts in one prompt produced **1,004 audio tokens** — exactly
+   2 × 502, with no truncation. The ceiling is per clip, not per request, so splitting a long turn into
+   ≤30s parts clears it. **The "delete two models" win survives.**
+2. 🔴 **A single clip past 30s is truncated silently.** 45s produced the same 752 tokens and the same
+   response as 30s. **No error, no warning, no field in the response indicates loss.** A user who talks
+   for 45 seconds simply has their last 15 seconds discarded, invisibly — far more dangerous than a
+   loud failure, because nothing in the system would ever report it.
+
+`[MANDATORY]` The brain must split captured audio into ≤30s clips before sending. Never hand the model a
+single clip longer than 30s and assume it was heard. This belongs with the §11.0 checklist.
+
+**Criterion 4 — context erosion. Passes.** 30s of audio moved prompt_tokens from 18,364 to 19,116, i.e.
+752 tokens against a 128K window and a 67,712-token KV budget. Confirms §12.2's analysis with live numbers.
+
+**Criterion 1 — Korean comprehension. Still open**, and the only one needing the recordings. The tone
+tests say nothing about whether E4B understands Korean speech as well as a Korean-tuned Whisper, nor
+whether it picks up emotional tone (the SER-replacement claim).
 
 **Landing point if criterion 3 hits**: hybrid — short utterances go through audio directly, long ones fall
 back to Whisper. But that means keeping Whisper, which erases the "delete two models" win. In that case the
@@ -821,7 +873,9 @@ starting the next; do not run parallel blockers just to save days we do not need
 | Q11 | Does backchanneling measurably improve perceived liveness in Korean? | EXP-12 |
 | Q12 | Has any open E2E model gained Korean + Jetson support? (re-check quarterly) | Quarterly review of MiniCPM-o, Qwen3-Omni |
 | ~~Q13a~~ | ~~E4B audio token rate and clip ceiling?~~ | ✅ **Resolved from the checkpoint: 25 tok/s, 30s ceiling (§12.2)** |
-| **Q13b** | Does E4B audio input beat the Whisper cascade on Korean, and does multi-clip segmentation clear the 30s ceiling? | **EXP-13 / §12.1–12.2** |
+| ~~Q13b~~ | ~~Does multi-clip segmentation clear the 30s ceiling?~~ | ✅ **Resolved: yes — 20s × 2 = 1,004 tokens, no truncation (§12.3)** |
+| **Q13c** | Does E4B audio input match a Korean-tuned Whisper on comprehension, and does it actually pick up emotional tone? | **EXP-13 criterion 1 — needs the recordings** |
+| **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | **Q14** | Must the current young voice (Zephyr + pitch shift) be reproduced, or can a young-sounding local TTS voice replace it — letting the 700ms shift buffer go? | User decision + EXP-11 (§13) |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
 | **Q16** | How was AEC actually solved on the Orin Nano, and is that recorded anywhere? | Robot repo's docs are stale (§18) — update them there |
