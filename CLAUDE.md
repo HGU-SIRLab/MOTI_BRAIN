@@ -587,7 +587,7 @@ KV cache 67,712 tokens. No config patch of any kind was needed for E4B.
 Warm TTFT beats the §13 escalation threshold (>0.7s) by 3.3×, so **no quantization or MTP is
 needed for TTFT** — decode speed is the remaining lever, not prefill.
 
-### 13.1 🔴 `[BLOCKER]` The persona defeats prefix caching — 17s of silence per session
+### 13.1 `[RESOLVED]` Persona prefill — 17s cold, solved by pre-warming on the brain
 
 `build_persona_system_instruction()` in `MOTI-HRI/core/utils.py` produces **31,845 chars =
 18,344 tokens**, and the per-user part (the user's name) sits at **character 372 — 1.2% in**.
@@ -600,18 +600,36 @@ immediately on connect, so **the robot stands silent for 17 seconds when someone
 This is a regression against the system being replaced: the robot repo measured Gemini's first
 response at 0.49–0.66s. Gemini absorbs an 18K prefill on datacenter hardware; this AGX cannot.
 
-**Fix — reorder the prompt, do not shrink it**: move the name/facts block to the *end* of the
-system instruction so the ~18K static body becomes a shared prefix. Then the brain pre-warms
-that prefix once at startup and every session's first turn is a cache hit. Expected 17.3s →
-well under 1s, for all users, with no change to what the model is actually told.
+**`[MEASURED]` Fix — pre-warm on the brain. No robot-side change at all.**
 
-- This edits `core/utils.py`, not `launcher.py` — §20 rule 17 is not in tension.
-- It is a prompt-ordering change; the persona's content and wording stay identical.
-- Verify after the change by re-running `scripts/bench_llm.py` and confirming cold ≈ warm.
+vLLM's prefix cache is GPU-resident and **survives across client processes for the life of the
+server**. Verified: a fresh benchmark process issuing the *first* request with a persona that had
+been prefilled minutes earlier by a different process got **0.178s**, not 17.26s.
 
-**Secondary lever, not needed yet**: 18K tokens of instruction is also 27% of the KV budget per
-session and costs some decode speed. Shrinking it is a behavior change, so treat it as a later
-option — reordering is free and should be done first.
+So the brain simply issues a throwaway request per persona at startup — before anyone is standing
+in front of the robot — and the 18K prefill is paid once, offline. Pre-warm:
+1. the **unknown-user** persona variant (a single fixed prompt shared by *every* first-time user), and
+2. the personas of known regular users.
+
+Capacity: 67,712 KV tokens ÷ 18,344 per persona ≈ **3.7 personas** resident at once, minus room for
+the active session. For more, raise `--gpu-memory-utilization` — E4B is small and 0.40 leaves
+headroom. Cache eviction is LRU and load is a single robot, so pressure is low.
+
+**Rejected alternative — reordering the prompt.** The earlier plan here was to move the name/facts
+block to the end so the static body becomes a shared prefix. Measurement killed it: the user's name
+is interpolated at **four** scattered points (1.2%, 1.2%, 9.5%, 46.9%), the last inside
+`deep_context_block`'s rule that an omitted Korean subject always refers to the user — wording
+written to fix a real observed failure. Moving it would mean rewriting tuned persona text, i.e. a
+behavior change, not the free reordering first assumed. Pre-warming achieves the same result with
+zero edits to the robot repo, so this stays rejected unless pre-warming proves insufficient.
+
+**Also rejected — `QUIZ_EXPERIMENT_MODE=true`.** The robot repo already ships this switch and it
+halves the prompt (31,835 → 15,982 chars), added because Gemini bills the system instruction every
+turn. It only halves the cold cost (~8.6s, still too slow) and it drops the free-conversation blocks
+(campus culture, deeper counselling, club suggestions) that *are* the 공감 대화 domain. Wrong trade here.
+
+**Secondary lever, untouched**: 18K tokens is also 27% of the KV budget per session and costs some
+decode speed (14.4 → 13.2 tok/s vs a short prompt). Shrinking it is a behavior change; leave it.
 
 ---
 
