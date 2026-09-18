@@ -40,6 +40,22 @@ def split_sentences(text: str) -> list[str]:
     return [p.strip() for p in _SENTENCE_END.split(text) if p and p.strip()]
 
 
+def take_sentences(buf: str) -> tuple[list[str], str]:
+    """Peel off completed sentences, returning them and the untouched remainder.
+
+    The remainder must not be rebuilt by re-joining split pieces: doing that strips the
+    trailing space, so the next streamed delta fuses onto the previous word and TTS
+    pronounces "정도로지치셨다니" as one word. Slice, never rejoin.
+    """
+    done, last = [], 0
+    for m in _SENTENCE_END.finditer(buf):
+        piece = buf[last:m.end()].strip()
+        if piece:
+            done.append(piece)
+        last = m.end()
+    return done, buf[last:]
+
+
 def pcm_to_wav(pcm: bytes, rate: int = IN_RATE) -> bytes:
     """§11.1: the wire carries raw PCM; WAV wrapping happens only here, at the
     vLLM boundary, because `input_audio` requires a container."""
@@ -82,6 +98,19 @@ class Session:
     system: str
     tools: list = field(default_factory=list)
     history: list = field(default_factory=list)
+    # The persona alone is 18,344 tokens of a 32,768 window (§13.1), leaving ~14k for
+    # history plus the current turn's audio. Unbounded history overflows it after roughly
+    # 118 turns and the request simply fails — and this server is always-on and resumes
+    # sessions across reconnects, so it accumulates. Trimming old turns is safe here
+    # precisely because long-term memory is not in this list: it lives in the user's
+    # `facts`, which the robot re-injects through the persona.
+    max_history: int = 40           # 20 exchanges
+
+    def remember(self, user: str, assistant: str) -> None:
+        self.history += [{"role": "user", "content": user},
+                         {"role": "assistant", "content": assistant}]
+        if len(self.history) > self.max_history:
+            del self.history[:len(self.history) - self.max_history]
 
     def _messages(self, parts: list) -> list:
         return [{"role": "system", "content": self.system}, *self.history,
@@ -194,17 +223,18 @@ class Turn:
                 self.marks["first_token"] = time.perf_counter() - t0
             # Synthesize each completed sentence immediately (§11.0-2) — waiting for the
             # whole reply is what collapses first-audio latency.
-            sentences = split_sentences(buf)
-            while len(sentences) > 1:
-                await self._speak(sentences.pop(0), emit, t0)
-                spoken.append(buf)
-                buf = " ".join(sentences)
-                sentences = split_sentences(buf)
+            done, buf = take_sentences(buf)
+            for sentence in done:
+                await self._speak(sentence, emit, t0)
+                spoken.append(sentence)
 
         if buf.strip() and not self.cancelled:
-            await self._speak(buf.strip(), emit, t0)
+            tail = buf.strip()
+            await self._speak(tail, emit, t0)
+            spoken.append(tail)
+            buf = ""
 
-        full = " ".join(filter(None, [*spoken, buf])).strip()
+        full = " ".join(spoken).strip()
         if calls and not self.cancelled:
             await emit("tool_call", {"calls": calls})
 
@@ -213,8 +243,7 @@ class Turn:
         if self.cancelled:
             return
         await emit("transcript", {"role": "user", "text": user_text})
-        self.session.history.append({"role": "user", "content": user_text})
-        self.session.history.append({"role": "assistant", "content": full})
+        self.session.remember(user_text, full)
         await emit("done", {"text": full, "marks": self.marks})
 
     async def _speak(self, sentence: str, emit, t0: float) -> None:
