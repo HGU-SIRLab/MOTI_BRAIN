@@ -5,13 +5,15 @@ returns plausible-looking bytes but unlistenable audio would pass any assertion.
 Run: .venv_tts/bin/python brain/test_pipeline.py
 """
 import asyncio
+import json
 import subprocess
 import sys
 import wave
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.pipeline import Session, Tts, Turn, split_sentences  # noqa: E402
+from brain.pipeline import (Session, Tts, Turn, split_sentences,  # noqa: E402
+                            strip_tool_calls, take_sentences)
 
 ROOT = Path(__file__).resolve().parent.parent
 CLIP = ROOT / "testdata" / "a1_tired.wav"
@@ -34,6 +36,44 @@ def test_split_sentences() -> None:
     print("split_sentences OK")
 
 
+def test_take_sentences() -> None:
+    # Rejoining split pieces used to eat the trailing space, fusing the next delta onto
+    # the previous word so TTS said "정도로지치셨다니" as one word.
+    buf, out = "", []
+    for delta in ["눈이 감길 정도로 ", "지치셨다니 걱정돼요. ", "푹 쉬세요."]:
+        buf += delta
+        done, buf = take_sentences(buf)
+        out += done
+    out.append(buf.strip())
+    joined = " ".join(out)
+    assert "정도로 지치셨다니" in joined, joined
+    assert joined.count("푹 쉬세요") == 1, joined      # and no duplication
+    print("take_sentences OK")
+
+
+def test_strip_tool_calls() -> None:
+    # vLLM 0.19.0 streams gemma4 tool calls as raw markup inside content. Unstripped it
+    # reaches TTS and the robot says "tool call set emotion sad" aloud.
+    real = ('<|tool_call>call:set_emotion{emotion:<|"|>sad<|"|>}<tool_call|>'
+            "아이고, 피곤하시겠어요.")
+    text, calls, tail = strip_tool_calls(real)
+    assert text == "아이고, 피곤하시겠어요." and not tail, (text, tail)
+    assert calls[0]["name"] == "set_emotion", calls
+    assert json.loads(calls[0]["arguments"]) == {"emotion": "sad"}, calls
+
+    # ...and it must survive arriving in fragments, which is how streaming delivers it.
+    raw, spoken, found = "", "", []
+    for i in range(0, len(real), 7):
+        raw += real[i:i + 7]
+        clean, calls, raw = strip_tool_calls(raw)
+        found += calls
+        spoken += clean
+    spoken += raw
+    assert "<|tool" not in spoken and "set_emotion" not in spoken, spoken
+    assert len(found) == 1, found
+    print("strip_tool_calls OK")
+
+
 def load_pcm16k(path: Path) -> bytes:
     return subprocess.run(
         ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0", "-vn",
@@ -43,6 +83,8 @@ def load_pcm16k(path: Path) -> bytes:
 
 async def main() -> None:
     test_split_sentences()
+    test_take_sentences()
+    test_strip_tool_calls()
     pcm = load_pcm16k(CLIP)
     print(f"입력 {CLIP.name}: {len(pcm) / 2 / 16000:.1f}s")
 

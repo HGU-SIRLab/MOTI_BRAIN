@@ -56,6 +56,63 @@ def take_sentences(buf: str) -> tuple[list[str], str]:
     return done, buf[last:]
 
 
+# vLLM 0.19.0's `gemma4` tool-call parser does not handle streaming: `delta.tool_calls`
+# stays empty and the raw markup arrives inside `delta.content` instead, like
+#   <|tool_call>call:set_emotion{emotion:<|"|>sad<|"|>}<tool_call|>
+# Left alone it reaches TTS and the robot says "tool call set emotion sad" out loud.
+# Non-streaming parses correctly but would cost the whole reply's latency (§13.2), so we
+# strip and parse it ourselves. Stripping is required regardless; parsing rides along free.
+_TOOL_OPEN, _TOOL_CLOSE = "<|tool_call>", "<tool_call|>"
+_TOOL_REGION = re.compile(re.escape(_TOOL_OPEN) + r"(.*?)" + re.escape(_TOOL_CLOSE), re.S)
+_BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
+
+
+def _parse_call(body: str) -> dict | None:
+    """`call:set_emotion{emotion:<|"|>sad<|"|>}` -> {name, arguments}."""
+    body = body.strip()
+    if not body.startswith("call:"):
+        return None
+    head, brace, rest = body[5:].partition("{")
+    if not brace:
+        return {"id": "", "name": head.strip(), "arguments": "{}"}
+    args = "{" + rest.rsplit("}", 1)[0] + "}"
+    args = args.replace('<|"|>', '"')
+    args = _BARE_KEY.sub(r'\1"\2":', args)          # {emotion:"sad"} is not valid JSON
+    try:
+        json.loads(args)
+    except json.JSONDecodeError:
+        args = "{}"                                  # never crash the turn over markup
+    return {"id": "", "name": head.strip(), "arguments": args}
+
+
+def strip_tool_calls(buf: str) -> tuple[str, list[dict], str]:
+    """Split a streamed buffer into (speakable text, calls, tail to hold back).
+
+    The tail is whatever might still be the beginning of a tool call — an unterminated
+    region, or a partial opening marker split across deltas. Holding it is what keeps
+    markup out of the speech.
+    """
+    calls = []
+
+    def take(m: re.Match) -> str:
+        call = _parse_call(m.group(1))
+        if call:
+            calls.append(call)
+        return ""
+
+    text = _TOOL_REGION.sub(take, buf)
+
+    cut = text.find(_TOOL_OPEN)                      # opened but not yet closed
+    if cut == -1:                                    # or a marker split mid-token
+        for i in range(1, len(_TOOL_OPEN)):
+            if text.endswith(_TOOL_OPEN[:i]):
+                cut = len(text) - i
+                break
+    if cut != -1:
+        return text[:cut], calls, text[cut:]
+    return text, calls, ""
+
+
 def pcm_to_wav(pcm: bytes, rate: int = IN_RATE) -> bytes:
     """§11.1: the wire carries raw PCM; WAV wrapping happens only here, at the
     vLLM boundary, because `input_audio` requires a container."""
@@ -112,13 +169,18 @@ class Session:
         if len(self.history) > self.max_history:
             del self.history[:len(self.history) - self.max_history]
 
-    def _messages(self, parts: list) -> list:
+    def _messages(self, parts: list, system: str | None = None) -> list:
+        # A transcription call passes its own system prompt and skips history: it must
+        # not inherit persona instructions, and prior turns are irrelevant to it.
+        if system is not None:
+            return [{"role": "system", "content": system},
+                    {"role": "user", "content": parts}]
         return [{"role": "system", "content": self.system}, *self.history,
                 {"role": "user", "content": parts}]
 
     def _post(self, parts: list, *, stream: bool, max_tokens: int,
-              with_tools: bool) -> urllib.request.Request:
-        body = {"model": MODEL, "messages": self._messages(parts),
+              with_tools: bool, system: str | None = None) -> urllib.request.Request:
+        body = {"model": MODEL, "messages": self._messages(parts, system),
                 "temperature": 0.7, "max_tokens": max_tokens, "stream": stream}
         if stream:
             body["stream_options"] = {"include_usage": True}
@@ -130,12 +192,17 @@ class Session:
             headers={"Content-Type": "application/json"})
 
     def transcribe(self, parts: list) -> str:
-        """User-side transcript (§12.6 gap 1). Audio parts come first so this call
-        shares the [system][audio] prefix with the reply call and does not pay the
-        audio prefill twice."""
+        """User-side transcript (§12.6 gap 1).
+
+        Uses a bare transcription system prompt, NOT the persona. With the persona the
+        model obeys instructions like "always call set_emotion first" even here, and the
+        transcript comes back as "set_emotion(tired)\n며칠 내내..." — polluting the
+        conversation log with tool syntax the user never said.
+        """
         req = self._post(parts + [{"type": "text",
                                    "text": "이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마."}],
-                         stream=False, max_tokens=256, with_tools=False)
+                         stream=False, max_tokens=256, with_tools=False,
+                         system="오디오를 듣고 발화 내용을 그대로 받아적는 전사기다. 다른 말은 하지 않는다.")
         with urllib.request.urlopen(req) as r:
             return (json.load(r)["choices"][0]["message"].get("content") or "").strip()
 
@@ -207,7 +274,7 @@ class Turn:
 
         loop.run_in_executor(None, pump)
 
-        buf, spoken, calls = "", [], []
+        raw, buf, spoken, calls = "", "", [], []
         while True:
             kind, value = await queue.get()
             if kind is None or self.cancelled:
@@ -218,7 +285,14 @@ class Turn:
             if kind == "tool_call":
                 calls = value
                 continue
-            buf += value
+            raw += value
+            # Pull tool markup out before anything can reach TTS; `raw` keeps only the
+            # part that might still turn out to be a tool call.
+            clean, found, raw = strip_tool_calls(raw)
+            calls += found
+            if not clean:
+                continue
+            buf += clean
             if "first_token" not in self.marks:
                 self.marks["first_token"] = time.perf_counter() - t0
             # Synthesize each completed sentence immediately (§11.0-2) — waiting for the
