@@ -137,8 +137,18 @@ Consequence to hold onto: echo-induced false barge-in used to be Google's proble
 Side note: `should_send_while_sleeping()`'s RMS gate on the robot exists only to avoid paying Gemini for
 silence. Locally that cost is zero, so the gate is inert — harmless, but no longer load-bearing.
 
-**EXP-13 (§12.1) would collapse `[STT]` and `[SER]` into `[Gemma 4 LLM]`**, since E4B takes audio directly.
-Treat the diagram above as the specified fallback if EXP-13 is killed.
+**✅ EXP-13 won (§12.4), so `[STT]` and `[SER]` are collapsed into `[Gemma 4 LLM]`** — E4B takes the audio
+directly and hears tone. The live pipeline is therefore:
+
+```
+[Mic + AEC] -> [Silero VAD] -> [smart-turn-v3] -> split into <=30s clips -> [Gemma 4 E4B]
+   (robot)  |                    (brain)                                  |  audio in, text out
+            |                                                             v
+            +<---------------------- [Speaker] <--------------------- [TTS]
+```
+
+The diagram above with separate `[STT]`/`[SER]`/`[AED]` boxes is retained as the documented fallback
+if the audio path fails in live use.
 
 ### 4.1 Why cascade, not end-to-end — re-verified 2026-09-18
 
@@ -253,7 +263,12 @@ sudo sysctl -w vm.drop_caches=3
 
 ---
 
-## 6. STT
+## 6. STT — ⚠️ NOT USED (fallback only, see §12.5)
+
+**EXP-13 removed this leg from the pipeline.** E4B takes audio directly and matched a perfect transcript
+(§12.4), so faster-whisper and its aarch64 `ctranslate2` source build are not needed. Everything below is
+kept as the fallback plan if the audio path later fails in live use. **Do not start the source build.**
+
 
 **PRIMARY: faster-whisper with a Korean fine-tuned checkpoint**
 
@@ -297,7 +312,12 @@ cmake -DWITH_MKL=OFF -DWITH_OPENBLAS=ON -DWITH_CUDA=ON -DWITH_CUDNN=ON       -DC
 
 ---
 
-## 7. SER — CLOSING THE AFFECTIVE DIALOG GAP
+## 7. SER — ⚠️ NOT USED (fallback only, see §12.5)
+
+**EXP-13 removed this leg too.** E4B hears prosody directly: given identical wording, it contradicted the
+literal words on a suppressed-sadness reading (§12.4). The affective-dialog gap this section was written to
+close is already closed, and the unmeasured Korean-SER risk is closed with it. Kept as fallback.
+
 
 **Why**: `[OFFICIAL]` Gemini Live's affective dialog "adapts response style and tone to match the user's input expression." A cascade loses tone at STT. Running SER **in parallel** with STT restores it at near-zero added latency.
 
@@ -387,7 +407,11 @@ Bonus: `[OFFICIAL]` SenseVoiceSmall's AED can distinguish laughter/cough/ambient
 
 ---
 
-## 10. KOREAN EMOTION DATA (fallback for §7)
+## 10. KOREAN EMOTION DATA — ⚠️ NOT NEEDED (see §12.5)
+
+This data existed only to retrain an SER classifier for §7, which EXP-13 removed. **Do not submit the
+AI-Hub request** unless the audio path fails in live use and §7 is reinstated.
+
 
 `[OFFICIAL]` AI-Hub:
 
@@ -426,7 +450,7 @@ LLM leg: the vLLM server is OpenAI-compatible, so the LLM call is a plain HTTP r
 | 2 | **Sentence-level TTS chunking** — cut the LLM stream at sentence boundaries and synthesize per sentence | Without it, TTS waits for the whole response and first-audio latency collapses. **Korean needs sentence-final endings (다/까/요/죠) checked together with punctuation** — punctuation alone under-segments Korean. |
 | 3 | **VAD-detection-lag compensation ring buffer** — keep a small rolling buffer of audio from *before* VAD fired | The first syllable of every utterance is clipped. |
 | 4 | **Cancellation propagation** — on interrupt, cancel *both* LLM generation and TTS synthesis | Orphaned tasks keep producing audio/tokens for a turn the user abandoned. Use asyncio task cancellation, and isolate TTS so a mid-synthesis abort cannot corrupt the next turn. |
-| 5 | **Split audio into ≤30s clips before sending** (only if EXP-13 wins and audio goes to the model directly) | Measured in §12.3: a longer clip is truncated **silently** — no error, no warning, nothing in the response reveals the loss. A user talking for 45s loses their last 15s and nobody ever finds out. |
+| 5 | **Split audio into ≤30s clips before sending** — unconditional, EXP-13 won (§12.4) | Measured in §12.3: a longer clip is truncated **silently** — no error, no warning, nothing in the response reveals the loss. A user talking for 45s loses their last 15s and nobody ever finds out. |
 
 ### 11.1 STT leg
 Run STT only on VAD-delimited segments (not continuously), and keep the §11.0-3 compensation buffer.
@@ -611,9 +635,61 @@ single clip longer than 30s and assume it was heard. This belongs with the §11.
 **Criterion 4 — context erosion. Passes.** 30s of audio moved prompt_tokens from 18,364 to 19,116, i.e.
 752 tokens against a 128K window and a 67,712-token KV budget. Confirms §12.2's analysis with live numbers.
 
-**Criterion 1 — Korean comprehension. Still open**, and the only one needing the recordings. The tone
-tests say nothing about whether E4B understands Korean speech as well as a Korean-tuned Whisper, nor
-whether it picks up emotional tone (the SER-replacement claim).
+### 12.4 ✅ `[MEASURED]` EXP-13 **WON** — criterion 1 cleared on real Korean speech (2026-09-19)
+
+Seven recordings, `scripts/exp13_korean.py`, `temperature=0`, real persona. Transcripts and recording
+conditions in `docs/exp13_recordings.md`. Recordings were uncompressed PCM16 48kHz, so no codec
+processing could have flattened prosody; the c-set's RMS spread was 10.6 dB (c2 quietest at −33.6,
+c3 loudest at −23.0), confirming the tone dynamics survived and comparison C was valid.
+
+**Comprehension matches a perfect transcript.** Audio-direct replies were as accurate and specific as
+replies to the reference text — e.g. for a1 it produced "며칠 동안 밤을 새우셨다니… 눈이 감길 정도로",
+recovering the exact content. Note the baseline here is a *perfect* transcript, which is stronger than
+any real Whisper would deliver, and audio-direct still matched it.
+
+**The tone channel works, and it is the whole argument for this path.** Identical wording, prosody only:
+
+| Input | Reply |
+|---|---|
+| text only (what Whisper would give) | "괜찮다고 말해주니 마음이 놓이네요…" — takes the words at face value |
+| c1_neutral | similar to text — face value |
+| **c2_suppressed** | **"괜찮다고 말했지만, 사실은 많이 신경 쓰이고 힘든 마음이 느껴져요"** |
+| c3_bright | "많이 긴장하셨군요. 그래도 잘 해내셨다니 정말 다행이에요" |
+
+c2 is the result that settles it: the model **contradicted the literal words** because it heard the
+suppressed sadness. That is precisely the affective-dialog behaviour §7 was going to add a separate
+emotion2vec model to recover, and it comes free.
+
+⚠️ **Caveat — tone can drive fabrication.** c3_bright invented context that was never said
+("잘 해내셨다니" — nothing in the utterance mentions succeeding at anything). The tone channel is real,
+but the model will over-infer a *situation* from prosody. Watch for this in live use; it is a
+hallucination risk the text-only path does not have. Not disqualifying, but it belongs in any write-up.
+
+**30s truncation and the split fix, both confirmed on real speech.** `b1_long` is 52.5s:
+
+| Send method | prompt_tokens | What the reply shows |
+|---|---|---|
+| single clip | 823 | only first-half content |
+| split into 2 × ≤30s | 1,387 | reaches "작은 진전… 희망" and "이렇게 이야기 나눠주셔서" — the *end* of the utterance |
+
+Token delta 564 ≈ 22.5 s × 25 tok/s — exactly the discarded tail. The split reply demonstrably heard
+the second half; the single-clip reply did not, and nothing in the response said so.
+
+**Sample size is small** — one speaker, one session, three utterances plus one long and one tone triple.
+Enough to decide the architecture (which is what §12 experiments are for, §0-A row 6), not enough to
+publish. Re-run properly if a paper happens.
+
+### 12.5 Consequences — two models leave the design
+
+EXP-13 passing all four criteria means:
+- **faster-whisper is out of the pipeline** (§6). The aarch64 `ctranslate2` source build — risk #1 in
+  v5's register — never has to happen.
+- **emotion2vec / SenseVoice SER is out** (§7). The unmeasured-Korean-SER risk is closed.
+- **AI-Hub emotion datasets are no longer needed** (§10) — they existed only to retrain an SER classifier.
+- EXP-4, EXP-5, EXP-6 are moot; they only existed to choose and validate those two legs.
+- §11.0 item 5 (≤30s clip splitting) is now **unconditionally mandatory**, not conditional.
+
+Keep §6 and §7 in this document as the documented fallback if the audio path later fails in live use.
 
 **Landing point if criterion 3 hits**: hybrid — short utterances go through audio directly, long ones fall
 back to Whisper. But that means keeping Whisper, which erases the "delete two models" win. In that case the
@@ -807,11 +883,10 @@ starting the next; do not run parallel blockers just to save days we do not need
 - [ ] bf16 first — no quantization until measurement says otherwise (§13 escalation)
 - [ ] Measure TTFT + tok/s → EXP-2
 
-**Stage 2 — EXP-13, the fork in the road** (§12.1)
-- [ ] Feed Korean audio directly to E4B via vLLM; measure audio token rate and clip ceiling empirically
-- [ ] Run the four kill criteria
-- [ ] **Survives → delete the Whisper and SER legs from the design. Killed → Stage 2b.**
-- [ ] Stage 2b (only if killed): `[VERIFY-FIRST]` faster-whisper GPU on Jetson (§6.1) — prebuilt `l4t-cuda-12.6.11-arch87` image first, source build as fallback
+**Stage 2 — EXP-13 ✅ DONE (§12.4, 2026-09-19)**
+- [x] Audio token rate and 30s ceiling measured empirically (§12.3)
+- [x] All four kill criteria cleared
+- [x] **Survived → Whisper and SER legs deleted (§12.5). Stage 2b cancelled.**
 
 **Stage 3 — TTS leg** (§8.2 ladder, Piper first now)
 - [ ] Piper on Jetson + Korean voice availability — this is the de-risking step, not the ambition
@@ -833,7 +908,7 @@ starting the next; do not run parallel blockers just to save days we do not need
 - [ ] `<SILENT>` gate → EXP-7
 - [ ] EXP-1 (E4B vs 26B-A4B) only if Korean quality looks marginal
 - [ ] EXP-12 backchanneling
-- [ ] EXP-4/5/6 only in the branch where EXP-13 was killed
+- [x] ~~EXP-4/5/6~~ — cancelled, they only existed to validate the deleted legs (§12.5)
 
 **Stage 6 — phase 2 transport**
 - [ ] Tailscale; verify `direct` not `relay` (§18); re-measure EXP-8 over it
@@ -846,8 +921,9 @@ starting the next; do not run parallel blockers just to save days we do not need
 | Risk | Severity (v6) | Mitigation |
 |---|---|---|
 | CosyVoice fails on Jetson | 🟡 **MED — downgraded from 🔴** | Piper is reinstated as a working floor (§8.2), so this is no longer a blocker. Still no Jetson precedent; pursue on merit, not under deadline. |
-| **faster-whisper CPU-only on Jetson** | 🟡 **MED — conditional** | `[REPORTED]` ctranslate2 PyPI wheel is CPU-only on aarch64; needs prebuilt sm_87 image or source build with cuDNN + OpenBLAS + `CUDA_ARCHITECTURES=87` (§6.1). **EXP-13 may remove this risk entirely** by deleting the Whisper leg. Do not start the source build until EXP-13 lands. |
-| Korean SER accuracy poor | 🟡 **MED — conditional** | Retrain classifier on AI-Hub data (§10). **EXP-13 may remove this too** (E4B hears tone directly). |
+| ~~faster-whisper CPU-only on Jetson~~ | ✅ **Closed by EXP-13 (§12.4)** | The Whisper leg is gone (§12.5). The aarch64 `ctranslate2` source build — v5's risk #1 — never has to happen. Reopens only if the audio path fails in live use. |
+| ~~Korean SER accuracy poor~~ | ✅ **Closed by EXP-13 (§12.4)** | E4B hears prosody directly and contradicted literal words on a suppressed-sadness reading. No SER model, no AI-Hub retraining. |
+| **Tone-driven fabrication** | 🟡 **MED — new in v6** | §12.4: on a bright-toned reading the model invented a situation that was never said. Prosody sensitivity cuts both ways. Watch in live use; the text-only path does not have this failure mode. |
 | Latency above target | 🟡 MED | E4B → MTP → QAT → shorter context → E2B. New v6 contributors: voice-shift buffer (§13) and, in phase 2, Tailscale relay fallback. |
 | **Tailscale falls back to DERP relay (phase 2)** | 🟡 **MED — new in v6** | Relayed WireGuard adds unpredictable latency, which lands directly in the voice loop. Require a **direct** connection (`tailscale status` shows `direct`, not `relay`) and treat relayed operation as a degraded mode. |
 | Missing AEC breaks barge-in | 🟡 MED | **v6 correction**: the robot repo's 30–36dB validation was on **Windows**; on Jetson the wheel is absent and its documented PulseAudio fallback was configured on a since-reverted Xavier board. **User states this is already solved on the Orin Nano — the robot repo's docs are stale and should be updated there.** This matters more now: replacing Gemini's server-side VAD with ours makes echo-induced false barge-in *our* problem. |
@@ -863,18 +939,19 @@ starting the next; do not run parallel blockers just to save days we do not need
 | Q1 | Does CosyVoice 2 run on Jetson Orin at all? | Day 1 / EXP-11 |
 | Q2 | E4B or 26B-A4B for Korean empathetic conversation? | EXP-1 |
 | Q3 | llama.cpp or vLLM faster here? | EXP-2 |
-| Q4 | Is emotion2vec+ usable for Korean out of the box? | EXP-5 |
-| Q5 | Does SenseVoiceSmall's Korean ASR match a Korean-tuned Whisper? | EXP-4 |
-| Q6 | Does the emotion label actually improve perceived empathy? | EXP-6 |
+| ~~Q4~~ | ~~emotion2vec+ for Korean?~~ | ⬜ **Moot — SER leg removed (§12.5)** |
+| ~~Q5~~ | ~~SenseVoiceSmall Korean ASR?~~ | ⬜ **Moot — STT leg removed (§12.5)** |
+| ~~Q6~~ | ~~Does an emotion label help?~~ | ⬜ **Moot — no separate label; tone is in-band (§12.4)** |
 | Q7 | Achievable end-to-end latency on this hardware? | EXP-8 |
-| Q8 | Which Korean Whisper checkpoint is best? | EXP-4 |
+| ~~Q8~~ | ~~Best Korean Whisper checkpoint?~~ | ⬜ **Moot — STT leg removed (§12.5)** |
 | Q9 | Do NeuTTS Air / VibeVoice-Realtime support Korean adequately? | EXP-11 |
 | Q10 | Does the prebuilt sm_87 ctranslate2 image work, or is a source build required? | Day 1 (§6.1) |
 | Q11 | Does backchanneling measurably improve perceived liveness in Korean? | EXP-12 |
 | Q12 | Has any open E2E model gained Korean + Jetson support? (re-check quarterly) | Quarterly review of MiniCPM-o, Qwen3-Omni |
 | ~~Q13a~~ | ~~E4B audio token rate and clip ceiling?~~ | ✅ **Resolved from the checkpoint: 25 tok/s, 30s ceiling (§12.2)** |
 | ~~Q13b~~ | ~~Does multi-clip segmentation clear the 30s ceiling?~~ | ✅ **Resolved: yes — 20s × 2 = 1,004 tokens, no truncation (§12.3)** |
-| **Q13c** | Does E4B audio input match a Korean-tuned Whisper on comprehension, and does it actually pick up emotional tone? | **EXP-13 criterion 1 — needs the recordings** |
+| ~~Q13c~~ | ~~Comprehension and tone?~~ | ✅ **Resolved: matched a perfect transcript, and tone changed the reply (§12.4)** |
+| **Q18** | How often does prosody make the model fabricate situations, and can the persona suppress it? | Live use; §12.4 caveat |
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | **Q14** | Must the current young voice (Zephyr + pitch shift) be reproduced, or can a young-sounding local TTS voice replace it — letting the 700ms shift buffer go? | User decision + EXP-11 (§13) |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
