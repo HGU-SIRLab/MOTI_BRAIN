@@ -6,3 +6,4 @@ __pycache__/
 testdata/
 .venv*/
 tts_eval/
+models/

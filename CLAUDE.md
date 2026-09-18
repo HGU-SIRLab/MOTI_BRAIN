@@ -409,6 +409,50 @@ Piper is a working floor, so CosyVoice can be pursued on its merits rather than 
 `[OFFICIAL]` **Silero VAD** — standalone, local CPU (v5 noted it as a Pipecat built-in; it is an independent package).
 `[OFFICIAL]` **smart-turn-v3** — Whisper Tiny encoder + linear classifier, ~8M params, 8MB ONNX, BSD 2-clause; ~65ms on a standard 1-vCPU instance, as low as 12ms for the int8 CPU build; input 16kHz mono PCM up to 8s (truncate from the start if longer); runs only after VAD detects silence; default turn-stop strategy in current Pipecat, which is why v5 chose it — the model is independent of the framework.
 
+### 9.1a `[MEASURED]` Turn detection as built (2026-09-19)
+
+**Silero VAD works; smart-turn-v3 does not, and is not wired in.**
+
+Silero runs over ONNX Runtime with no torch (this machine exports a global `PYTHONPATH` into
+HARU's ROS venv, so pip torch collides with the Jetson build — see `brain/vad.py`). One trap:
+the v5 ONNX needs **64 samples of previous context prepended to each 512-sample window**.
+Omitting it raises nothing and returns ~0.001 for everything, including obvious speech.
+
+`stop_secs = 1.5` is set from measurement, not preference. Longest pause *inside* a single
+utterance across our recordings:
+
+| clip | longest internal pause |
+|---|---|
+| c1_neutral | 0.38s |
+| a2_happy | 0.70s |
+| a1_tired | 0.80s |
+| a3_anxious | 0.93s |
+| **c2_suppressed** | **1.38s** |
+
+All five recordings now detect as exactly one turn (68–98% of audio retained).
+
+**★ The domain finding here matters more than the number.** The longest pause belongs to the
+*emotionally suppressed* delivery — the take where the speaker is holding something back. That
+is not a coincidence, and it is precisely the user this robot exists for: someone fighting back
+tears pauses longer than someone reporting their day. **A silence threshold tuned on ordinary
+speech will cut off exactly the people the robot is meant to serve.** 1.5s is the price of not
+doing that, and it lands on every turn.
+
+**smart-turn-v3 attempt, and why it stopped.** The model (`models/smart_turn_v3.onnx`, Whisper
+Tiny encoder + linear head, 80×800 log-mel) would let `stop_secs` drop back to ~0.2s, buying
+back over a second on every turn. Hand-rolling Whisper's mel in numpy did not work:
+
+- Speech, silence and white noise all score 0.50–0.73 with no consistent ordering.
+- Tried front-padding and back-padding short audio, and realistic inputs that end in a pause
+  (the shape the model actually sees in use). Neither separates finished from mid-word speech.
+- The first validation *passed* this broken implementation, because it only compared a full clip
+  against a truncated one and accepted differences of 0.001. A wrong mel produces confident
+  numbers, not errors. `brain/test_smart_turn.py` is now the strict gate and fails.
+
+Stopped deliberately rather than guessing further: without a reference implementation to compare
+against, the search is unbounded, and a turn detector that is subtly wrong is worse than none.
+Tracked as Q19.
+
 ### 9.2 Barge-in
 `[OFFICIAL]` Silero VAD + smart-turn-v3 together give accurate, low-latency turn start/stop signals. v5 relied on Pipecat to turn those signals into interruption logic that yields to a real interruption without reacting to brief mid-sentence pauses — **we now implement that logic ourselves** (§11.0 items 1 and 4).
 
@@ -1030,6 +1074,7 @@ starting the next; do not run parallel blockers just to save days we do not need
 | ~~Q13b~~ | ~~Does multi-clip segmentation clear the 30s ceiling?~~ | ✅ **Resolved: yes — 20s × 2 = 1,004 tokens, no truncation (§12.3)** |
 | ~~Q13c~~ | ~~Comprehension and tone?~~ | ✅ **Resolved: matched a perfect transcript, and tone changed the reply (§12.4)** |
 | **Q18** | How often does prosody make the model fabricate situations, and can the persona suppress it? | Live use; §12.4 caveat |
+| **Q19** | Can smart-turn-v3's Whisper mel be reproduced correctly (numpy, no torch)? Worth ~1.3s on every turn (§9.1a). | Needs a reference implementation to diff against |
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | ~~Q14~~ | ~~Reproduce the young voice, or drop the pitch shift?~~ | ✅ **Resolved 2026-09-19: Piper's voice as-is, no pitch shift. `ENABLE_VOICE_SHIFT=false` (§8.3)** |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
