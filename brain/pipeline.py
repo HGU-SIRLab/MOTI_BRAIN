@@ -283,7 +283,10 @@ class Turn:
                 await emit("error", {"detail": value})
                 break
             if kind == "tool_call":
-                calls = value
+                # Never fires on vLLM 0.19.0 (delta.tool_calls is always empty) but must
+                # accumulate, not replace: a future vLLM that streams tool calls properly
+                # would otherwise silently discard whatever strip_tool_calls already found.
+                calls += value
                 continue
             raw += value
             # Pull tool markup out before anything can reach TTS; `raw` keeps only the
@@ -301,6 +304,12 @@ class Turn:
             for sentence in done:
                 await self._speak(sentence, emit, t0)
                 spoken.append(sentence)
+
+        # Anything still held back was suspected of being a tool call. An unterminated
+        # region is correctly dropped, but a false-positive prefix match is real speech —
+        # release it rather than silently losing the end of a sentence.
+        if raw and not raw.startswith(_TOOL_OPEN):
+            buf += raw
 
         if buf.strip() and not self.cancelled:
             tail = buf.strip()
