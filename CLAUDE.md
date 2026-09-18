@@ -519,20 +519,49 @@ Orin; apply the same caution to E4B's audio path.
 |---|---|---|
 | 1 | Korean comprehension noticeably worse than the Whisper path | **Kill** |
 | 2 | TTFT slower than the Whisper path | **Kill** |
-| 3 | No workable strategy for utterances beyond the audio-length limit | **Kill, or hybrid → see below** |
-| 4 | Multi-turn context erosion from audio tokens is severe | **Kill** |
+| 3 | No workable strategy for utterances beyond the 30s ceiling — **including multi-clip segmentation** (§12.2) | **Kill, or hybrid → §12.2** |
+| 4 | Context erosion severe *at the context length we can afford to serve* | **Kill** — but §12.2 shows this is unlikely (30s = 0.57% of 128K) |
 
-**On criteria 3 and 4** `[UNVERIFIED]` — Gemma 4 audio is reported to consume on the order of ~25 tokens per
-second of audio with a ~30s clip ceiling. **This is not stated anywhere in v5 of this spec and is not
-verified here**, so per §2 and §20 rule 1 it must be **measured in EXP-13**, not assumed. E4B's
-`audio_config` (`attention_chunk_size`, `subsampling_conv_channels`) is the place to derive the real rate,
-with an empirical token count as the ground truth. The consequences to test for are real regardless of the
-exact numbers:
-- **Long utterances get truncated** — a person unloading for 30+ seconds is a *normal* scenario in empathetic
-  conversation, not an edge case.
-- **Context fills fast** — audio tokens crowd out the accumulated `facts` and conversation history that the
-  persona depends on.
-- **Prefill grows → TTFT grows**, which is criterion 2 by another route.
+### 12.2 Audio token budget — `[OFFICIAL]` resolved from the checkpoint itself
+
+Read directly from the downloaded E4B checkpoint, so this is primary vendor data, not a report:
+
+| Source | Field | Value | Meaning |
+|---|---|---|---|
+| `processor_config.json` | `audio_ms_per_token` | **40** | **25 audio tokens per second** |
+| `processor_config.json` | `audio_seq_length` | **750** | **30.0s hard ceiling per audio clip** (750 × 40ms) |
+| `processor_config.json` | `feature_extractor.hop_length` | 160 @ 16kHz | 10ms mel frames → 4× subsampling to reach 40ms/token |
+| `config.json` | `text_config.max_position_embeddings` | **131072** | 128K context |
+| `config.json` | `text_config.sliding_window` | 512 | hybrid attention — most layers are cheap on long context |
+
+The "~25 tokens/sec, ~30s ceiling" figures are therefore **confirmed exactly**. Resolves Q13's first half.
+
+**This reweights kill criteria 3 and 4:**
+
+**Criterion 4 (context erosion) — much weaker than assumed. Likely will not trigger.**
+
+| Utterance | Audio tokens | Share of 128K context |
+|---|---|---|
+| 5s | 125 | 0.10% |
+| 10s | 250 | 0.19% |
+| 30s (max) | 750 | 0.57% |
+
+Fifty turns of 10s speech is ~12.5K tokens, under 10% of context. Audio tokens do **not** meaningfully crowd
+out the persona or accumulated `facts`. The real constraint is not the model's ceiling but **the context
+length we choose to serve and its KV-cache cost** (≈84 KB/token here: 42 layers × 2 KV heads × 256 head_dim
+× 2 × 2 bytes). So criterion 4 should be re-read as: *does the context length we can actually afford to
+serve leave room for both audio and history?* — a serving-config question, measured in Stage 1.
+
+**Criterion 3 (30s ceiling) — this is the one that matters.** A person unloading for 30+ seconds is a
+*normal* scenario in empathetic conversation, not an edge case.
+
+But there is a mitigation worth testing before falling back to Whisper: **we control segmentation.** A long
+turn can be split into consecutive ≤30s clips and passed as multiple audio parts in one prompt. If Gemma 4
+accepts interleaved multi-audio input, the ceiling stops being a wall and the "delete two models" win
+survives. **Test this explicitly in EXP-13 before invoking the hybrid/SER-only landing point.**
+
+**Prefill grows → TTFT grows** remains true and is criterion 2 by another route: a 30s utterance adds 750
+prefill tokens.
 
 **Landing point if criterion 3 hits**: hybrid — short utterances go through audio directly, long ones fall
 back to Whisper. But that means keeping Whisper, which erases the "delete two models" win. In that case the
@@ -730,7 +759,8 @@ starting the next; do not run parallel blockers just to save days we do not need
 | Q10 | Does the prebuilt sm_87 ctranslate2 image work, or is a source build required? | Day 1 (§6.1) |
 | Q11 | Does backchanneling measurably improve perceived liveness in Korean? | EXP-12 |
 | Q12 | Has any open E2E model gained Korean + Jetson support? (re-check quarterly) | Quarterly review of MiniCPM-o, Qwen3-Omni |
-| **Q13** | What is E4B's actual audio token rate and clip ceiling, and does audio input beat the Whisper cascade on Korean? | **EXP-13 / §12.1** |
+| ~~Q13a~~ | ~~E4B audio token rate and clip ceiling?~~ | ✅ **Resolved from the checkpoint: 25 tok/s, 30s ceiling (§12.2)** |
+| **Q13b** | Does E4B audio input beat the Whisper cascade on Korean, and does multi-clip segmentation clear the 30s ceiling? | **EXP-13 / §12.1–12.2** |
 | **Q14** | Must the current young voice (Zephyr + pitch shift) be reproduced, or can a young-sounding local TTS voice replace it — letting the 700ms shift buffer go? | User decision + EXP-11 (§13) |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
 | **Q16** | How was AEC actually solved on the Orin Nano, and is that recorded anywhere? | Robot repo's docs are stale (§18) — update them there |
