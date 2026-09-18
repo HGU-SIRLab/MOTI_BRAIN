@@ -679,6 +679,33 @@ the second half; the single-clip reply did not, and nothing in the response said
 Enough to decide the architecture (which is what §12 experiments are for, §0-A row 6), not enough to
 publish. Re-run properly if a paper happens.
 
+### 12.6 `[MEASURED]` Two gaps the deletion opened, both closed
+
+Removing the STT leg quietly broke something v5 had counted as a *strength*. Found by re-auditing
+against §14, not by anything failing.
+
+**Gap 1 — the user-side transcript.** `launcher.py` feeds `server_content.input_transcription` into
+`turn_user` -> `session_history` -> `report_manager.save_conversation_log()`. Without an STT leg nothing
+produces it, which would have silently broken three things: the conversation log, the 마음처방전 report,
+and the quiz's `user_spoke` guard (added 2026-08-10 to stop the model calling `submit_guess` when the
+user had not actually spoken).
+
+Closed: **E4B transcribes it itself, word-for-word exact** on the a1 recording — output identical to the
+reference transcript, character for character.
+
+`[MANDATORY]` design note for Stage 4: order the prompt as **[system][audio][instruction]**, not
+[system][instruction][audio]. The audio prefill is the expensive part (~29ms per second of speech,
+§12.3); putting it before the instruction makes `[system][audio]` a shared prefix, so the reply call
+and the transcription call hit the same cache entry instead of paying the audio prefill twice.
+
+**Gap 2 — function calling was never tested**, only asserted by §14. The entire robot depends on it
+(`remember_fact`, `set_emotion`, `play_manual_motion`, `express_gesture`, quiz tools).
+
+Closed: verified on this server. Text input produced three correct calls with correct arguments
+(`set_emotion(happy)`, `remember_fact(name)`, `remember_fact(major)`), `finish_reason: tool_calls`.
+**It also fires with audio input** — the a1 tired recording produced `set_emotion(sad)`, which is the
+real production shape.
+
 ### 12.5 Consequences — two models leave the design
 
 EXP-13 passing all four criteria means:
@@ -800,14 +827,14 @@ constraint on any realistic link, including Tailscale.
 
 | Feature `[OFFICIAL]` | Status | Path |
 |---|---|---|
-| Barge-in | ✅ Achievable | Pipecat + Silero + smart-turn (§9.2) |
+| Barge-in | ✅ Achievable | Silero + smart-turn, **on the brain** (§4, §9.2). Pipecat removed (§0-A row 2) |
 | Interruption cancel/discard | ✅ Achievable | Mirror Gemini's contract |
-| Audio transcription (both sides) | ✅ **Advantage** | Cascade produces text natively |
+| Audio transcription (both sides) | ✅ **Verified** | v5 credited the cascade's STT for this; EXP-13 deleted that leg, so the brain must ask E4B for the user transcript explicitly (§12.6). Measured word-for-word exact on Korean. |
 | High-quality natural speech | ✅ Achievable | §8 candidates |
-| Affective dialog | ✅ Achievable | Parallel SER (§7) — **pending Korean verification** |
-| Emotional speech output | ✅ Achievable | CosyVoice 2 emotion instruct |
+| Affective dialog | ✅ **Verified** | In-band: E4B hears prosody itself (§12.4). No parallel SER. |
+| Emotional speech output | ⚠️ **At risk** | Piper's only Korean voice has no emotion control and no voice choice (§8.2). CosyVoice 2 instruct would restore it but has no Jetson precedent. |
 | Proactive audio | ✅ Achievable | `<SILENT>` gate (§9.3) |
-| Function calling | ✅ Available | `[OFFICIAL]` Gemma 4 native function calling; vLLM flags provided |
+| Function calling | ✅ **Verified** | Tested on this server: 3 correct calls with correct args, and it still fires with audio input (§12.6). |
 | Async function calling | ⚠️ Custom work | Not free; low priority for Moti |
 | Background reasoning | ❌ Deliberately excluded | Thinking mode kills latency (§5.4) |
 | 24 languages | ❌ Korean-only | Irrelevant for Moti |
