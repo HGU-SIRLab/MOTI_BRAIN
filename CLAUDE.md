@@ -404,11 +404,13 @@ Piper is a working floor, so CosyVoice can be pursued on its merits rather than 
 ## 9. VAD, TURN DETECTION, BARGE-IN, PROACTIVE AUDIO
 
 ### 9.1 Components
-`[OFFICIAL]` **Silero VAD** — Pipecat built-in, local CPU.
-`[OFFICIAL]` **smart-turn-v3** — Whisper Tiny encoder + linear classifier, ~8M params, 8MB ONNX, BSD 2-clause; ~65ms on a standard 1-vCPU instance, as low as 12ms for the int8 CPU build; input 16kHz mono PCM up to 8s (truncate from the start if longer); runs only after VAD detects silence; default turn-stop strategy in current Pipecat.
+**v6**: Pipecat is not used (§0-A row 2), so the *components* below stand but the *wiring* between them is ours to write — see the §11.0 checklist. Where v5 credited Pipecat for a behaviour, read it as a requirement on our own code.
+
+`[OFFICIAL]` **Silero VAD** — standalone, local CPU (v5 noted it as a Pipecat built-in; it is an independent package).
+`[OFFICIAL]` **smart-turn-v3** — Whisper Tiny encoder + linear classifier, ~8M params, 8MB ONNX, BSD 2-clause; ~65ms on a standard 1-vCPU instance, as low as 12ms for the int8 CPU build; input 16kHz mono PCM up to 8s (truncate from the start if longer); runs only after VAD detects silence; default turn-stop strategy in current Pipecat, which is why v5 chose it — the model is independent of the framework.
 
 ### 9.2 Barge-in
-`[OFFICIAL]` Pipecat: Silero VAD + SmartTurn together emit turn start/stop frames with high accuracy and very low latency, driving optimized interruption logic so the bot yields to interruptions but does not react prematurely to brief mid-sentence pauses.
+`[OFFICIAL]` Silero VAD + smart-turn-v3 together give accurate, low-latency turn start/stop signals. v5 relied on Pipecat to turn those signals into interruption logic that yields to a real interruption without reacting to brief mid-sentence pauses — **we now implement that logic ourselves** (§11.0 items 1 and 4).
 
 `[OFFICIAL]` Mirror Gemini's interruption contract: on detected interruption, cancel and discard ongoing generation; retain only what was already sent; **the client stops playback and clears its queue.**
 
