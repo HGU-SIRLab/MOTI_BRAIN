@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .env
 .venv/
+.vllm_compile_cache/
+testdata/

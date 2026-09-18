@@ -572,7 +572,50 @@ while leaving §6 (Whisper STT) as specified. Decide between hybrid and SER-only
 
 ## 13. LATENCY BUDGET
 
-`[UNVERIFIED]` — estimates only. Replace with EXP-8.
+### 13.0 `[MEASURED]` Stage 1 results — E4B on this AGX (2026-09-18)
+
+vLLM 0.19.0, `ghcr.io/nvidia-ai-iot/vllm:gemma4-jetson-orin`, bf16 (no quantization),
+`--max-model-len 32768`, `--gpu-memory-utilization 0.40`, MAXN + `jetson_clocks`.
+KV cache 67,712 tokens. No config patch of any kind was needed for E4B.
+
+| Condition | TTFT | decode |
+|---|---|---|
+| Real MOTI persona (18,344 tok), **first turn of a session** | **17.26 s** | 13.2 tok/s |
+| Real MOTI persona, **turns 2+** (prefix cache hit) | **0.209 s** | 13.2 tok/s |
+| Short stand-in prompt (~50 tok) | 0.174 s | 14.4 tok/s |
+
+Warm TTFT beats the §13 escalation threshold (>0.7s) by 3.3×, so **no quantization or MTP is
+needed for TTFT** — decode speed is the remaining lever, not prefill.
+
+### 13.1 🔴 `[BLOCKER]` The persona defeats prefix caching — 17s of silence per session
+
+`build_persona_system_instruction()` in `MOTI-HRI/core/utils.py` produces **31,845 chars =
+18,344 tokens**, and the per-user part (the user's name) sits at **character 372 — 1.2% in**.
+Everything user-specific comes *first*; the ~18K tokens of static instruction come *after* it.
+
+Consequence: the cacheable shared prefix is ~200 tokens. Every session — and every different
+user — pays the full 18,344-token prefill. `launcher.py` sends a "greet the user first" turn
+immediately on connect, so **the robot stands silent for 17 seconds when someone walks up.**
+
+This is a regression against the system being replaced: the robot repo measured Gemini's first
+response at 0.49–0.66s. Gemini absorbs an 18K prefill on datacenter hardware; this AGX cannot.
+
+**Fix — reorder the prompt, do not shrink it**: move the name/facts block to the *end* of the
+system instruction so the ~18K static body becomes a shared prefix. Then the brain pre-warms
+that prefix once at startup and every session's first turn is a cache hit. Expected 17.3s →
+well under 1s, for all users, with no change to what the model is actually told.
+
+- This edits `core/utils.py`, not `launcher.py` — §20 rule 17 is not in tension.
+- It is a prompt-ordering change; the persona's content and wording stay identical.
+- Verify after the change by re-running `scripts/bench_llm.py` and confirming cold ≈ warm.
+
+**Secondary lever, not needed yet**: 18K tokens of instruction is also 27% of the KV budget per
+session and costs some decode speed. Shrinking it is a behavior change, so treat it as a later
+option — reordering is free and should be done first.
+
+---
+
+Everything below is `[UNVERIFIED]` — estimates only. Replace with EXP-8.
 
 | Stage | Reference |
 |---|---|
