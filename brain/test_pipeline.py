@@ -54,18 +54,31 @@ def test_take_sentences() -> None:
 def test_strip_tool_calls() -> None:
     # vLLM 0.19.0 streams gemma4 tool calls as raw markup inside content. Unstripped it
     # reaches TTS and the robot says "tool call set emotion sad" aloud.
+    names = ("set_emotion", "remember_fact")
+
+    # The usual shape has no wrapper at all — handling only the wrapped one let this
+    # reach TTS and the robot read "set emotion sad" aloud during the first round trip.
+    bare = 'set_emotion{emotion:<|"|>sad<|"|>} 며칠 내내 밤을 새우셨군요.'
+    text, calls, tail = strip_tool_calls(bare, names)
+    assert "set_emotion" not in text and not tail, (text, tail)
+    assert json.loads(calls[0]["arguments"]) == {"emotion": "sad"}, calls
+
+    # Ordinary braces must survive: only declared tool names count as a call.
+    text, calls, _ = strip_tool_calls("수식은 f{x}처럼 씁니다.", names)
+    assert text == "수식은 f{x}처럼 씁니다." and not calls, (text, calls)
+
     real = ('<|tool_call>call:set_emotion{emotion:<|"|>sad<|"|>}<tool_call|>'
             "아이고, 피곤하시겠어요.")
-    text, calls, tail = strip_tool_calls(real)
+    text, calls, tail = strip_tool_calls(real, names)
     assert text == "아이고, 피곤하시겠어요." and not tail, (text, tail)
     assert calls[0]["name"] == "set_emotion", calls
     assert json.loads(calls[0]["arguments"]) == {"emotion": "sad"}, calls
 
     # ...and it must survive arriving in fragments, which is how streaming delivers it.
     raw, spoken, found = "", "", []
-    for i in range(0, len(real), 7):
-        raw += real[i:i + 7]
-        clean, calls, raw = strip_tool_calls(raw)
+    for i in range(0, len(bare), 7):
+        raw += bare[i:i + 7]
+        clean, calls, raw = strip_tool_calls(raw, names)
         found += calls
         spoken += clean
     spoken += raw

@@ -85,14 +85,45 @@ def _parse_call(body: str) -> dict | None:
     return {"id": "", "name": head.strip(), "arguments": args}
 
 
-def strip_tool_calls(buf: str) -> tuple[str, list[dict], str]:
+def _find_bare_call(buf: str, names: tuple[str, ...]) -> tuple[int, int, dict] | None:
+    """Locate an unwrapped `set_emotion{...}` call. Only declared tool names count —
+    matching any `word{...}` would swallow ordinary text."""
+    for name in names:
+        i = buf.find(name + "{")
+        if i == -1:
+            continue
+        j = buf.find("}", i)
+        if j == -1:
+            return (i, -1, {})                       # opened, not yet closed: hold it
+        call = _parse_call("call:" + buf[i:j + 1])
+        if call:
+            return (i, j + 1, call)
+    return None
+
+
+def _holdback(text: str, names: tuple[str, ...]) -> int:
+    """Index from which `text` might still be growing into a tool call, or -1."""
+    cut = text.find(_TOOL_OPEN)
+    if cut != -1:
+        return cut
+    for marker in (_TOOL_OPEN, *(n + "{" for n in names)):
+        for i in range(1, len(marker)):
+            if text.endswith(marker[:i]):
+                return len(text) - i
+    return -1
+
+
+def strip_tool_calls(buf: str, names: tuple[str, ...] = ()) -> tuple[str, list[dict], str]:
     """Split a streamed buffer into (speakable text, calls, tail to hold back).
 
-    The tail is whatever might still be the beginning of a tool call — an unterminated
-    region, or a partial opening marker split across deltas. Holding it is what keeps
-    markup out of the speech.
+    The model emits tool calls in two shapes, both as plain `content` (vLLM 0.19.0 never
+    populates `delta.tool_calls`). Measured over repeated runs:
+        set_emotion{emotion:<|"|>sad<|"|>} 며칠 내내...        <- usual
+        <|tool_call>call:set_emotion{...}<tool_call|>...       <- also seen
+    Handling only the wrapped one let the bare form reach TTS, and the robot read the
+    markup aloud. The tail is whatever might still be growing into either shape.
     """
-    calls = []
+    calls: list[dict] = []
 
     def take(m: re.Match) -> str:
         call = _parse_call(m.group(1))
@@ -102,12 +133,17 @@ def strip_tool_calls(buf: str) -> tuple[str, list[dict], str]:
 
     text = _TOOL_REGION.sub(take, buf)
 
-    cut = text.find(_TOOL_OPEN)                      # opened but not yet closed
-    if cut == -1:                                    # or a marker split mid-token
-        for i in range(1, len(_TOOL_OPEN)):
-            if text.endswith(_TOOL_OPEN[:i]):
-                cut = len(text) - i
-                break
+    while names:
+        hit = _find_bare_call(text, names)
+        if hit is None:
+            break
+        i, j, call = hit
+        if j == -1:                                  # unterminated — hold from here
+            return text[:i], calls, text[i:]
+        calls.append(call)
+        text = text[:i] + text[j:]
+
+    cut = _holdback(text, names)
     if cut != -1:
         return text[:cut], calls, text[cut:]
     return text, calls, ""
@@ -242,7 +278,10 @@ class Turn:
 
     def __init__(self, session: Session, tts: Tts, pcm: bytes):
         self.session, self.tts, self.parts = session, tts, audio_parts(pcm)
+        self.tool_names = tuple(
+            t.get("function", {}).get("name", "") for t in session.tools) or ()
         self.cancelled = False
+        self.spoke = False                  # did the user actually hear anything?
         self.marks: dict[str, float] = {}   # §20 rule 5: instrument from the first commit
 
     def cancel(self) -> None:
@@ -291,7 +330,7 @@ class Turn:
             raw += value
             # Pull tool markup out before anything can reach TTS; `raw` keeps only the
             # part that might still turn out to be a tool call.
-            clean, found, raw = strip_tool_calls(raw)
+            clean, found, raw = strip_tool_calls(raw, self.tool_names)
             calls += found
             if not clean:
                 continue
@@ -308,7 +347,8 @@ class Turn:
         # Anything still held back was suspected of being a tool call. An unterminated
         # region is correctly dropped, but a false-positive prefix match is real speech —
         # release it rather than silently losing the end of a sentence.
-        if raw and not raw.startswith(_TOOL_OPEN):
+        if raw and not raw.startswith(_TOOL_OPEN) and not any(
+                raw.startswith(n) for n in self.tool_names):
             buf += raw
 
         if buf.strip() and not self.cancelled:
@@ -338,5 +378,6 @@ class Turn:
             return
         if "first_audio" not in self.marks:
             self.marks["first_audio"] = time.perf_counter() - t0
+        self.spoke = True
         await emit("transcript", {"role": "model", "text": sentence})
         await emit("audio", {"pcm": pcm, "rate": self.tts.rate})
