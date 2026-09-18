@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 .vllm_compile_cache/
 testdata/
+.venv*/
+tts_eval/

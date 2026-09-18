@@ -372,6 +372,29 @@ Searched again: Jetson AI Lab, jetson-containers, NVIDIA forums, community blogs
 3. **Supertonic 3** (Korean vendor, CPU) — OpenRAIL-M, acceptable for research use
 4. **NeuTTS Air** (GGUF on-device) — verify Korean
 
+### 8.3 ✅ `[DECIDED]` TTS = Piper `ko_KR-kss-medium`, voice unmodified (2026-09-19)
+
+Piper works on this AGX and is fast enough: **RTF 0.22–0.38** measured on real Moti lines (8.4s of speech
+synthesized in 1.88s). With sentence-level chunking (§11.0-2) the first sentence lands well inside 0.5s.
+
+Two constraints found while validating it, both accepted:
+- **Korean has exactly one voice** — `ko_KR-kss-medium`, 1 speaker, 22,050 Hz. There is no voice to choose,
+  so "pick a young-sounding voice instead of pitch-shifting" was never an option here.
+- **Dataset licence is CC BY-NC-SA 4.0** (KSS). Fine for research use (§1, §15), and a second thing to swap
+  alongside Piper's GPL if distribution is ever reconsidered.
+
+User listened to the voice with and without a +3.5 semitone shift and **chose the unmodified voice.**
+Consequences: `ENABLE_VOICE_SHIFT=false`, the 700ms buffer disappears (§13), and `pyworld` drops off the
+robot's dependency list.
+
+`[TODO Stage 4]` Piper emits **22,050 Hz**; the robot's playback path was built for Gemini's 24 kHz. Resample
+on the brain before sending, and keep §11.0-1's 100–200ms playback buffer in mind when sizing it.
+
+**Installation trap**: the official `piper_linux_aarch64` binary (1.2.0) **crashes** on this Korean model —
+`"aɪ" is not a single codepoint`, a mismatch between its bundled espeak-ng and the model's phoneme map.
+The maintained `piper-tts` pip package (1.4.2) works. Installed in `.venv_tts/` to keep it away from the
+system Python.
+
 **CosyVoice 2 remains the quality/streaming target** (§8.1: 150ms first-packet, Korean, emotion instruct) and
 still has no Jetson precedent (§8.2). The v6 change is that **failing on CosyVoice is no longer expensive** —
 Piper is a working floor, so CosyVoice can be pursued on its merits rather than under Day-1 pressure.
@@ -803,14 +826,12 @@ Everything below is `[UNVERIFIED]` — estimates only. Replace with EXP-8.
 
 **v6 additions to the budget — both found by reading the robot code, both measurable in EXP-8:**
 
-1. **Voice-shift buffer: 700ms.** The robot's `VOICE_SHIFT_BUFFER_MS` is **700ms** (raised from 500ms after
-   reported crackling/dropouts), sitting on top of playback. §9.2 calls for a 100–200ms playback buffer, so
-   this is 3.5–7× that guidance and it delays interrupt flush as well as first audio. It exists to support
-   the pyworld pitch/formant shift (+3.5st/×1.12) that makes the voice sound younger — which was needed only
-   because Gemini's `Zephyr` voice is an adult voice. **A local TTS lets us pick a young-sounding voice
-   directly, and then the shifter (and its 700ms) can be switched off entirely.** Add
-   `ENABLE_VOICE_SHIFT` on/off as an arm of EXP-8 and EXP-9, and treat "pick the voice at the TTS instead of
-   post-processing it" as the preferred outcome (EXP-11 selection criterion).
+1. ✅ **Voice-shift buffer: 700ms — removed.** The robot's `VOICE_SHIFT_BUFFER_MS` was **700ms** (raised
+   from 500ms after reported crackling), sitting on top of playback — 3.5–7× the 100–200ms §9.2 calls for,
+   delaying both first audio and interrupt flush. It existed only to support the pyworld pitch/formant shift
+   (+3.5st/×1.12) that made Gemini's adult `Zephyr` voice sound younger. **Decision 2026-09-19: use Piper's
+   voice as recorded, no pitch shift** (§8.3) → set `ENABLE_VOICE_SHIFT=false`, the 700ms is gone, and the
+   robot no longer needs `pyworld` at all — one fewer aarch64 source build on that side.
 2. **Network hop.** Phase 1 (same LAN, wired GbE) should be ~1ms and negligible, but audio buffering across
    the link is not — measure it, don't assume. Phase 2 (Tailscale) must be measured separately, and
    distinguish direct vs. relayed (§18). Note the tension: a lossy remote link wants *more* jitter buffer,
@@ -915,10 +936,12 @@ starting the next; do not run parallel blockers just to save days we do not need
 - [x] All four kill criteria cleared
 - [x] **Survived → Whisper and SER legs deleted (§12.5). Stage 2b cancelled.**
 
-**Stage 3 — TTS leg** (§8.2 ladder, Piper first now)
-- [ ] Piper on Jetson + Korean voice availability — this is the de-risking step, not the ambition
-- [ ] Voice selection with §13's finding in mind: prefer a young-sounding voice over pitch-shift post-processing, so `ENABLE_VOICE_SHIFT` can go off
-- [ ] CosyVoice 2 on merit afterwards (plain PyTorch first) → EXP-11
+**Stage 3 — TTS leg ✅ DONE (§8.3, 2026-09-19)**
+- [x] Piper runs on this AGX, Korean voice exists (exactly one), RTF 0.22–0.38
+- [x] Voice decided: `ko_KR-kss-medium` unmodified, `ENABLE_VOICE_SHIFT=false` → 700ms buffer removed
+- [ ] CosyVoice 2 — **deferred, not cancelled.** Piper is a working floor, so this is now an
+      optional quality upgrade rather than a risk item. Revisit if the voice disappoints in live use,
+      or if emotional speech output (§14) turns out to matter.
 
 **Stage 4 — the pipeline and the wire** (§11)
 - [ ] VAD + smart-turn-v3 on the brain, with the §11.0-3 compensation buffer
@@ -980,7 +1003,7 @@ starting the next; do not run parallel blockers just to save days we do not need
 | ~~Q13c~~ | ~~Comprehension and tone?~~ | ✅ **Resolved: matched a perfect transcript, and tone changed the reply (§12.4)** |
 | **Q18** | How often does prosody make the model fabricate situations, and can the persona suppress it? | Live use; §12.4 caveat |
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
-| **Q14** | Must the current young voice (Zephyr + pitch shift) be reproduced, or can a young-sounding local TTS voice replace it — letting the 700ms shift buffer go? | User decision + EXP-11 (§13) |
+| ~~Q14~~ | ~~Reproduce the young voice, or drop the pitch shift?~~ | ✅ **Resolved 2026-09-19: Piper's voice as-is, no pitch shift. `ENABLE_VOICE_SHIFT=false` (§8.3)** |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
 | **Q16** | How was AEC actually solved on the Orin Nano, and is that recorded anywhere? | Robot repo's docs are stale (§18) — update them there |
 
