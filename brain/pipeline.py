@@ -70,7 +70,8 @@ def take_sentences(buf: str) -> tuple[list[str], str]:
 # strip and parse it ourselves. Stripping is required regardless; parsing rides along free.
 _TOOL_OPEN, _TOOL_CLOSE = "<|tool_call>", "<tool_call|>"
 _TOOL_REGION = re.compile(re.escape(_TOOL_OPEN) + r"(.*?)" + re.escape(_TOOL_CLOSE), re.S)
-_BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
+#  `{emotion: "sad"}` and `(emotion="tender")` both reach JSON as `{"emotion": ...}`.
+_BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
 
 # §9.3 proactive audio: the persona tells the model to answer with exactly this when the
 # user was not talking to it. The brain must drop it rather than speak it — the token is
@@ -89,11 +90,17 @@ def _parse_call(body: str) -> dict | None:
     body = body.strip()
     if not body.startswith("call:"):
         return None
-    head, brace, rest = body[5:].partition("{")
-    call = {"id": uuid.uuid4().hex[:8], "name": head.strip(), "args": {}}
-    if not brace:
-        return call
-    raw = "{" + rest.rsplit("}", 1)[0] + "}"
+    body = body[5:]
+    opens = [body.find(o) for o in _OPENERS if body.find(o) != -1]
+    cut = min(opens) if opens else -1
+    call = {"id": uuid.uuid4().hex[:8],
+            "name": (body[:cut] if cut != -1 else body).strip(), "args": {}}
+    if cut == -1 or not call["name"]:
+        # A nameless call is markup noise, not an instruction — `<|tool_call>call:<tool_call|>`
+        # shows up empty when the payload was already consumed as a bare call. Emitting it
+        # would have the robot look up a tool named "".
+        return call if call["name"] else None
+    raw = "{" + body[cut + 1:].rsplit(_OPENERS[body[cut]], 1)[0] + "}"
     raw = raw.replace('<|"|>', '"')
     raw = _BARE_KEY.sub(r'\1"\2":', raw)            # {emotion:"sad"} is not valid JSON
     try:
@@ -103,32 +110,55 @@ def _parse_call(body: str) -> dict | None:
     return call
 
 
+_OPENERS = {"{": "}", "(": ")"}                      # see _find_bare_call
+
+
 def _find_bare_call(buf: str, names: tuple[str, ...]) -> tuple[int, int, dict] | None:
-    """Locate an unwrapped `set_emotion{...}` call. Only declared tool names count —
-    matching any `word{...}` would swallow ordinary text."""
+    """Locate an unwrapped `set_emotion{...}` or `set_emotion(...)` call.
+
+    Only declared tool names count — matching any `word{...}` would swallow ordinary
+    text. The parenthesised shape was added 2026-09-19: under the real 18K persona the
+    model produces `set_emotion(emotion="tender")` as often as the brace form, and with
+    only braces handled it went straight to TTS and the robot read it aloud. That is the
+    third distinct spelling of this bug; hence the table rather than another branch.
+    """
+    best = None
     for name in names:
-        i = buf.find(name + "{")
-        if i == -1:
-            continue
-        j = buf.find("}", i)
-        if j == -1:
-            return (i, -1, {})                       # opened, not yet closed: hold it
-        call = _parse_call("call:" + buf[i:j + 1])
-        if call:
-            return (i, j + 1, call)
-    return None
+        for opener, closer in _OPENERS.items():
+            i = buf.find(name + opener)
+            if i == -1 or (best is not None and i >= best[0]):
+                continue
+            j = buf.find(closer, i)
+            if j == -1:
+                best = (i, -1, {})                   # opened, not yet closed: hold it
+                continue
+            call = _parse_call("call:" + buf[i:j + 1])
+            if call:
+                best = (i, j + 1, call)
+    return best
 
 
 def _holdback(text: str, names: tuple[str, ...]) -> int:
-    """Index from which `text` might still be growing into a tool call, or -1."""
+    """Index from which `text` might still be growing into a tool call, or -1.
+
+    Longest prefix wins. Checking short-to-first-match (as this did until 2026-09-19)
+    holds back one character of `remember_fact` because the text happens to end in "r",
+    releases `remembe` to TTS, and then the held "r" never grows into the marker — so the
+    whole call leaks out a character at a time. Only reachable when a delta ends exactly
+    on a short prefix, which is why it survived every test with the toy persona.
+    """
     cut = text.find(_TOOL_OPEN)
     if cut != -1:
         return cut
-    for marker in (_TOOL_OPEN, *(n + "{" for n in names)):
-        for i in range(1, len(marker)):
+    best = -1
+    markers = (_TOOL_OPEN, *(n + o for n in names for o in _OPENERS))
+    for marker in markers:
+        for i in range(min(len(marker) - 1, len(text)), 0, -1):
             if text.endswith(marker[:i]):
-                return len(text) - i
-    return -1
+                here = len(text) - i
+                best = here if best == -1 else min(best, here)
+                break
+    return best
 
 
 def strip_tool_calls(buf: str, names: tuple[str, ...] = ()) -> tuple[str, list[dict], str]:
@@ -156,8 +186,15 @@ def strip_tool_calls(buf: str, names: tuple[str, ...] = ()) -> tuple[str, list[d
         if hit is None:
             break
         i, j, call = hit
-        if j == -1:                                  # unterminated — hold from here
-            return text[:i], calls, text[i:]
+        if j == -1:
+            # Unterminated — hold from here, but the prefix may itself be the opening of
+            # a wrapped call. Returning `text[:i]` directly (as this did until
+            # 2026-09-19) emitted a live `<|tool_call>call:` as speakable text, and the
+            # robot read the markup aloud. Only showed up under the real persona, where
+            # the model wraps *and* uses the bare form in the same reply.
+            cut = _holdback(text[:i], names)
+            cut = i if cut == -1 else cut
+            return text[:cut], calls, text[cut:]
         calls.append(call)
         text = text[:i] + text[j:]
 

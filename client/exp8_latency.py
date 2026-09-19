@@ -43,10 +43,60 @@ STOP_SECS = 1.5          # timer floor; the veto (§9.1c) may extend past it
 # last long pause). Scripted clips have unnaturally short internal pauses; the full
 # monologues are several turns. These are one real turn each, spoken naturally.
 CLIPS = ["turn_s1", "turn_s2", "turn_s3", "turn_s4", "turn_s5", "turn_s6"]
-CONFIG = SimpleNamespace(
+TOY = SimpleNamespace(
     system_instruction=("너는 공감 로봇 모티야. 사용자의 말에 따뜻하게 공감하며 대화해. "
                         "답변은 2~3문장으로 짧게 해. 이모지는 쓰지 마."),
     tools=[])
+
+
+def _stand_in_tools() -> list:
+    """Stand-ins for `launcher.py`'s tools, matching their names and signatures.
+
+    The real ones are closures built by factories that need motors, a quiz UI and a
+    running event loop (`launcher.py:302-339`), so they cannot be imported here. Only
+    the *declarations* reach the model, and the persona is 18,344 tokens against a few
+    hundred for these — close enough, and honest about being stand-ins.
+    """
+    def remember_fact(key: str, value: str) -> str:
+        """사용자에 대해 알게 된 사실을 기억한다."""
+    def forget_me() -> str:
+        """사용자에 대해 기억한 내용을 모두 지운다."""
+    def set_emotion(emotion: str) -> str:
+        """로봇의 표정을 바꾼다."""
+    def play_gesture(name: str) -> str:
+        """미리 정의된 제스처를 재생한다."""
+    def play_manual_motion(pan: int, tilt: int) -> str:
+        """머리를 지정한 각도로 움직인다."""
+    def start_quiz() -> str:
+        """퀴즈를 시작한다."""
+    def submit_guess(guess: str) -> str:
+        """사용자의 답을 제출한다."""
+    def request_hint() -> str:
+        """힌트를 요청한다."""
+    def end_quiz_early() -> str:
+        """퀴즈를 중간에 끝낸다."""
+    return [remember_fact, forget_me, set_emotion, play_gesture, play_manual_motion,
+            start_quiz, submit_guess, request_hint, end_quiz_early]
+
+
+def real_config() -> SimpleNamespace:
+    """The persona and tools the robot actually sends.
+
+    Everything through 2026-09-19 was measured against TOY: ~50 tokens and no tools,
+    against the robot's 18,344-token persona (§13.1) and nine tool declarations. That is
+    not a small difference — §13.0 measured decode at 13.2 tok/s under the real persona
+    versus 14.4 with a short prompt, and the first turn on it costs 17.26s uncached.
+    Numbers taken with TOY do not transfer to the robot.
+    """
+    sys.path.insert(0, "/home/herobot/MOTI-HRI")
+    from core.utils import build_persona_system_instruction
+    return SimpleNamespace(
+        system_instruction=build_persona_system_instruction(name="조형민",
+                                                            facts_summary=""),
+        tools=_stand_in_tools())
+
+
+CONFIG = TOY   # overridden by --real
 
 
 def pcm16k(stem: str) -> bytes:
@@ -120,4 +170,9 @@ async def main(runs: int) -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 8))
+    args = [a for a in sys.argv[1:] if a != "--real"]
+    if "--real" in sys.argv:
+        CONFIG = real_config()
+        print(f"실제 페르소나 {len(CONFIG.system_instruction):,}자 + 툴 "
+              f"{len(CONFIG.tools)}개로 측정\n")
+    asyncio.run(main(int(args[0]) if args else 8))

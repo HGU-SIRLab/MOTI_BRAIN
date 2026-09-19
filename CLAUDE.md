@@ -1370,6 +1370,57 @@ check (every `send(t=...)` kind in the brain is matched by a `kind == ...` in th
 does not catch this bug** — the `error` branch existed, it just did the wrong thing. Only executing the
 path catches it. Coverage of the message table is not coverage of the behaviour.
 
+### 13.9 🔴 `[MEASURED]` Everything before this was measured with a toy persona
+
+Asked whether `docs/robot_integration.md` was ready to hand to the robot, and checking rather than
+answering, the benchmark's own config turned out not to be the robot's:
+
+| | EXP-8 / `fake_robot` used | the robot actually sends |
+|---|---|---|
+| system prompt | ~50 tokens | **18,344 tokens** (31,874 chars, §13.1) |
+| tools | **none** | nine declarations |
+
+`client/exp8_latency.py --real` now builds the real persona via
+`MOTI-HRI/core/utils.build_persona_system_instruction` and passes stand-ins for launcher's nine tools
+(the real ones are closures over motors and a quiz UI, so only their declarations can be reproduced).
+It found three things, and two of them would have reached the user as sound.
+
+**1. Latency is 2.65s, not 2.02s.**
+
+| config | mean | p95 | min |
+|---|---|---|---|
+| toy (every figure before today) | 2.11s | 3.33s | 1.42s |
+| **real persona + tools** | **2.65s** | **5.10s** | 1.42s |
+
+Consistent with §13.0's 13.2 tok/s under the real persona against 14.4 with a short prompt. The floor is
+unchanged — short turns still answer in 1.42s — but the mean and the tail both stretch. **2.65s is the
+number to quote for the robot.**
+
+**2. The first turn of a fresh brain costs 14.17s.** Measured, once, before the persona entered the
+prefix cache. §13.1 documents pre-warming as the fix and tags it `[MEASURED]`, but **no code does it** —
+grep for it and there is nothing. `launcher.py` sends a greeting trigger the moment it connects, so as
+written the robot stands silent for ~14s in front of whoever walked up. Not a regression; a fix that was
+designed and never built.
+
+**3. 🔴 Tool markup reached TTS again — three new ways.** Five of eight replies carried it, and
+`_speak()` synthesizes exactly the string it emits as the transcript, so the robot would have read it
+aloud. None of it was reachable with the toy config, which declares no tools.
+
+| shape | why it got through |
+|---|---|
+| `set_emotion(emotion="tender")` | `_find_bare_call` only looked for `name{`. The parenthesised form is as common as the brace form under the real persona |
+| a live `<\|tool_call>call:` released as speech | the unterminated-bare-call branch returned `text[:i]` directly, **skipping `_holdback`**, so an open tool region in the prefix went straight out |
+| `remember_fact(...)` dribbling out one character at a time | `_holdback` tested marker prefixes **shortest-first and returned on the first match**: text ending in "r" held back one character, released `remembe`, and the held "r" could never grow into the marker |
+
+All three are fixed and `brain/test_pipeline.py` now drives four shapes across seven chunk boundaries.
+The third is the interesting one — a latent bug with no connection to personas at all, reachable
+whenever a stream delta ends on a one-character prefix. It survived every previous test because the toy
+config passes no tool names, so the marker list was effectively empty.
+
+**The lesson generalises past this bug.** A benchmark config that is easier than production does not
+merely give optimistic numbers; it removes whole code paths from the test. Tool parsing is ~60 lines of
+the pipeline and no test had ever run it against a declared tool list.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---

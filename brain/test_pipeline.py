@@ -90,7 +90,35 @@ def test_strip_tool_calls() -> None:
     spoken += raw
     assert "<|tool" not in spoken and "set_emotion" not in spoken, spoken
     assert len(found) == 1, found
-    print("strip_tool_calls OK")
+
+    # Every shape seen so far, at every chunk boundary. Added 2026-09-19 after the real
+    # 18K persona (the toy one never triggered these) produced two fresh leaks in one
+    # EXP-8 run: `set_emotion(emotion="tender")`, which was not matched at all, and a
+    # live `<|tool_call>call:` released as speech. A third was found while fixing them —
+    # a delta ending on a one-character prefix ("...r" of `remember_fact`) made the whole
+    # call dribble out a character at a time. All three would have been spoken aloud.
+    wide = ("set_emotion", "remember_fact", "play_gesture", "forget_me")
+    shapes = [
+        ('set_emotion(emotion="tender")안녕하세요.', 1),
+        ('remember_fact(key="major", value="전산전자")기억할게요.', 1),
+        ("forget_me()다 지웠어요.", 1),
+        ('<|tool_call>call:set_emotion{emotion:<|"|>tender<|"|>}<tool_call|>반가워요.', 1),
+        ("<|tool_call>call:<tool_call|>점심 드셨어요?", 0),   # nameless: markup, not a call
+        ("리멤버는 좋은 단어예요. 세트도요.", 0),               # must not eat ordinary text
+    ]
+    for text_in, n_calls in shapes:
+        for chunk in (1, 2, 3, 5, 7, 13, 200):
+            raw, spoken, found = "", "", []
+            for i in range(0, len(text_in), chunk):
+                raw += text_in[i:i + chunk]
+                clean, calls, raw = strip_tool_calls(raw, wide)
+                found += calls
+                spoken += clean
+            spoken += raw
+            leaked = [n for n in (*wide, "tool_call") if n in spoken]
+            assert not leaked, f"chunk={chunk} 누출 {leaked}: {spoken!r}"
+            assert len(found) == n_calls, f"chunk={chunk} {text_in!r} -> {found}"
+    print("strip_tool_calls OK (4가지 형태 × 7가지 청크 경계)")
 
 
 def load_pcm16k(path: Path) -> bytes:
