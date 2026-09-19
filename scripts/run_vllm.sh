@@ -14,6 +14,16 @@ docker rm -f "$NAME" 2>/dev/null || true
 # and this box must also host TTS alongside the LLM (§1 distributed brain).
 # 32768: MOTI's real persona (build_persona_system_instruction) is 18,344 tokens on its
 # own, so 16384 cannot serve a single request. Leaves room for audio (750/30s) + history.
+#
+# EXP-3 (speculative decoding) is BLOCKED by this container — see §13.6. Both paths fail
+# at startup, so neither flag is here:
+#   draft_model : transformers in this image does not know model type `gemma4_assistant`,
+#                 which is exactly the drafter the spec names (§5.4 rule 5)
+#   ngram       : `ModuleNotFoundError: No module named 'numba'`
+# Reviving it needs a rebuilt image, not a config change.
+#
+# If that ever happens: do *not* also disable multimodal, which the recipe suggests.
+# Audio input is the primary path since EXP-13 (§12.4); turning it off breaks the input.
 docker run -d --name "$NAME" --runtime=nvidia --network host \
   -v /home/herobot/.cache/huggingface:/root/.cache/huggingface \
   -v "$CACHE":/root/.cache/vllm/torch_compile_cache \

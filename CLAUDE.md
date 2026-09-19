@@ -256,7 +256,13 @@ sudo sysctl -w vm.drop_caches=3
 3. **Cap responses at 2–3 sentences in the system prompt.** Verbosity is latency.
 4. **`[OFFICIAL]` Gemma 4 has native system prompt support** — use it for the Moti persona.
 5. **`[OFFICIAL]` Every Gemma 4 model ships an MTP draft model for speculative decoding** — faster inference, no quality loss. Checkpoint pattern: `{model}-qat-q4_0-unquantized` + `{model}-qat-q4_0-unquantized-assistant`.
-   `[REPORTED]` Modal's vLLM Gemma 4 example confirms the practical recipe: **turn off multimodal features to save GPU RAM, and activate built-in MTP speculative decoding for improved throughput at low concurrency**, naming the drafter as a separate `-assistant` checkpoint (e.g. `google/gemma-4-26B-A4B-it-assistant`) pinned to a specific revision. **Moti is single-user, low-concurrency — exactly the regime where MTP helps most.** Disabling multimodal is safe for us (we use text-only; §7 SER is a separate model).
+   `[REPORTED]` Modal's vLLM Gemma 4 example confirms the practical recipe: **turn off multimodal features to save GPU RAM, and activate built-in MTP speculative decoding for improved throughput at low concurrency**, naming the drafter as a separate `-assistant` checkpoint (e.g. `google/gemma-4-26B-A4B-it-assistant`) pinned to a specific revision. **Moti is single-user, low-concurrency — exactly the regime where MTP helps most.**
+
+   🔴 **v6 correction — do NOT disable multimodal.** v5 wrote that it was safe "because we use
+   text-only". EXP-13 (§12.4) made **audio the primary input path**: the model hears the user
+   directly, which is what deleted the Whisper and SER legs. Following the Modal recipe verbatim
+   would break the pipeline's input entirely. Take the MTP half of that recipe and leave
+   multimodal on.
 6. **`[OFFICIAL]` QAT checkpoints exist** (`google/gemma-4-qat-q4-0`) — quantization folded into training, near-baseline quality.
 7. **`[OFFICIAL]` ⚠️ E2B audio is broken under llama.cpp on Orin.** If any audio path is used, serve via vLLM.
 8. `[OFFICIAL]` Ollama does not work with Gemma 4 on Orin Nano (works elsewhere incl. AGX Orin). Prefer the containers above anyway.
@@ -1236,6 +1242,32 @@ seconds. Kept, because that is also when the user is waiting longest.
 An earlier version of it made things **worse**: it buffered the entire turn and released
 everything at confirmation, so first audio waited for the *last* sentence — 3.25s mean instead
 of 2.02s. It now flushes what is ready and streams the remainder.
+
+### 13.6 ❌ `[BLOCKED]` EXP-3 speculative decoding — the container cannot run either path
+
+§13.5 identified decode rate as the remaining bottleneck, which makes EXP-3 the natural next
+lever. Both ways of enabling it fail **at startup** on
+`ghcr.io/nvidia-ai-iot/vllm:gemma4-jetson-orin`:
+
+| approach | failure |
+|---|---|
+| `draft_model` with `google/gemma-4-E4B-it-assistant` | `transformers` in this image does not recognise model type `gemma4_assistant` — vLLM refuses the config before the engine starts |
+| `ngram` (no draft model at all) | `ModuleNotFoundError: No module named 'numba'` in `v1/spec_decode/ngram_proposer.py` |
+
+The irony is that the drafter is exactly what §5.4 rule 5 names, it exists on the Hub, it is
+tiny (4 layers, 256 hidden, 183MB), and it downloaded fine. The blocker is the image, not the
+model. Upgrading `transformers` inside an image NVIDIA built specifically for Gemma 4 risks the
+support the image exists to provide, and adding `numba` means maintaining a derived image.
+
+**Reverted; EXP-3 needs a rebuilt image, not a config change.** Worth revisiting if the image
+is rebuilt for another reason. Two cycles were spent learning this, at ~33 minutes per vLLM
+restart — after the first failure the config was validated in a throwaway container before
+restarting, which is the right order and should be the habit.
+
+Remaining levers on the ~1s first-sentence decode, in rough order of appeal:
+- a shorter opening sentence from the persona (prompt-side, no infrastructure risk)
+- a q4 QAT checkpoint (§5.4 rule 6) — decode is memory-bandwidth bound, so this should help;
+  costs a download and one 33-minute restart
 
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
