@@ -912,6 +912,21 @@ conversation log needs. Running it alongside the reply and collecting it before 
 (2.38 → 3.55s, it now competes for the GPU) and that is the right trade: it is off the path the user
 waits on.
 
+### 13.3 `[MEASURED]` Full round trip over the wire (2026-09-19, Stage 4)
+
+`brain/server.py` + `brain/fake_robot.py`: mic PCM streamed continuously in real time,
+turn boundaries decided by the brain's VAD, reply audio and tool calls streamed back.
+
+| | measured |
+|---|---|
+| silence-end -> first reply audio | **0.24–1.29 s** across clips |
+| barge-in: user speaks -> `interrupted` at the robot | **0.07 s** |
+
+Barge-in beats §4.2's reference badly — `duet` reports 198ms for the same reaction, and
+that paper calls fast interruption the cheapest source of perceived liveness. Note what
+is *not* in these numbers: `stop_secs = 1.5` (§9.1a) still elapses before the brain even
+considers the turn finished, so felt latency is that plus the figure above.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---

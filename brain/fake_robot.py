@@ -43,11 +43,13 @@ def pcm16k(stem: str) -> bytes:
         check=True, capture_output=True).stdout
 
 
-async def main(stem: str = "a1_tired") -> None:
+async def main(stem: str = "a1_tired", barge_with: str | None = None) -> None:
     pcm = pcm16k(stem)
     chunks, rate, done = [], None, asyncio.Event()
     t_sent_end = 0.0
     first_audio_at = None
+    speaking = asyncio.Event()      # set once reply audio starts arriving
+    interrupted_at = None
 
     async with websockets.connect(URI, max_size=None) as ws:
         await ws.send(json.dumps({"t": "hello", "system": SYSTEM, "tools": TOOLS}))
@@ -61,6 +63,7 @@ async def main(stem: str = "a1_tired") -> None:
                         first_audio_at = time.perf_counter()
                     chunks.append(msg)
                     rate = pending_rate
+                    speaking.set()
                     continue
                 m = json.loads(msg)
                 kind = m.get("t")
@@ -76,6 +79,15 @@ async def main(stem: str = "a1_tired") -> None:
                         results.append({"id": c.get("id", ""), "name": c["name"],
                                         "result": "ok"})
                     await ws.send(json.dumps({"t": "tool_result", "results": results}))
+                elif kind == "interrupted":
+                    # §9.2: the client stops playback and clears its queue. Dropping the
+                    # buffered audio here is the half the brain cannot do for us.
+                    nonlocal interrupted_at
+                    interrupted_at = time.perf_counter()
+                    dropped = len(chunks)
+                    chunks.clear()
+                    print(f"  INTERRUPTED — 재생 중단, 버퍼 {dropped}청크 폐기")
+                    done.set()
                 elif kind == "turn_complete":
                     done.set()
                 elif kind == "error":
@@ -96,8 +108,29 @@ async def main(stem: str = "a1_tired") -> None:
         t_sent_end = time.perf_counter()
         print("발화 끝, 침묵 전송 완료 — 뇌의 응답 대기")
 
+        if barge_with:
+            # Wait until Moti is actually speaking, then talk over her.
+            await asyncio.wait_for(speaking.wait(), timeout=60)
+            await asyncio.sleep(0.4)
+            # Skip the clip's leading silence — a2_happy starts with 1.41s of it, and
+            # interrupting with silence tests nothing (it did not fire the first time).
+            full = pcm16k(barge_with)
+            cut = full[int(1.6 * 16000) * 2:int(3.4 * 16000) * 2]
+            t_barge = time.perf_counter()
+            print(f"  >>> 말하는 도중 끼어들기 ({barge_with})")
+            for i in range(0, len(cut), CHUNK):
+                await ws.send(cut[i:i + CHUNK])
+                await asyncio.sleep(CHUNK / 2 / 16000)
+
         await asyncio.wait_for(done.wait(), timeout=120)
         receiver.cancel()
+        if barge_with:
+            if interrupted_at is None:
+                print("\n끼어들었는데 interrupted가 오지 않았다 — barge-in 실패")
+                sys.exit(1)
+            print(f"\n끼어든 시점부터 interrupted 수신까지: "
+                  f"{interrupted_at - t_barge:.2f}s")
+            return
 
     if not chunks:
         print("\n오디오를 받지 못했다")
@@ -116,4 +149,5 @@ async def main(stem: str = "a1_tired") -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "a1_tired"))
+    asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "a1_tired",
+                     sys.argv[2] if len(sys.argv) > 2 else None))

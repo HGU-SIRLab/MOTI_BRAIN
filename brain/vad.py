@@ -53,6 +53,21 @@ class TurnDetector:
         self._speaking = False
         self._silence = 0
         self._speech_windows = 0
+        self._run = 0                    # consecutive speech windows right now
+
+    @property
+    def in_speech(self) -> bool:
+        return self._speaking
+
+    @property
+    def speech_run(self) -> int:
+        """Consecutive speech windows in the current run (32ms each).
+
+        Barge-in reads this rather than `in_speech`: reacting to a single window makes
+        a cough cut the robot off mid-sentence, while waiting for a full turn is far too
+        late — §4.2 puts useful interruption reaction near 200ms.
+        """
+        return self._run
 
     def _prob(self, window: bytes) -> float:
         samples = (np.frombuffer(window, dtype=np.int16).astype(np.float32) / 32768.0)
@@ -73,6 +88,7 @@ class TurnDetector:
         for i in range(n):
             window = data[i * BYTES_PER_WINDOW:(i + 1) * BYTES_PER_WINDOW]
             speech = self._prob(window) >= self.threshold
+            self._run = self._run + 1 if speech else 0
 
             if not self._speaking:
                 self._pre.append(window)

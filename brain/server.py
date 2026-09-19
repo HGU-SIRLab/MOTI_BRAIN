@@ -31,6 +31,11 @@ from brain.vad import TurnDetector  # noqa: E402
 
 HOST, PORT = "0.0.0.0", 8765
 TOOL_RESULT_TIMEOUT = 10.0
+# Consecutive 32ms speech windows before we treat incoming audio as an interruption.
+# One window lets a cough cut Moti off mid-sentence; waiting for a whole turn is far too
+# late. Three is ~96ms, inside the ~200ms reaction §4.2 calls the cheapest source of
+# perceived liveness.
+BARGE_WINDOWS = 3
 
 log = logging.getLogger("brain")
 
@@ -122,7 +127,23 @@ class Connection:
     async def on_binary(self, pcm: bytes) -> None:
         if self.session is None:
             return
-        for audio in self.detector.feed(pcm):
+        turns = self.detector.feed(pcm)
+
+        # Barge-in (§9.2, §11.0-1/-4): the user started talking while Moti was replying.
+        # Cancel generation *and* synthesis, and tell the robot — it stops playback and
+        # clears its queue, which is the half of the contract we cannot do from here.
+        #
+        # This assumes AEC on the robot actually works. Without it Moti's own voice comes
+        # back through the mic and interrupts her mid-sentence; the robot repo logged
+        # exactly that symptom before AEC was in place (§18).
+        turn = self.current
+        if turn is not None and not turn.cancelled \
+                and self.detector.speech_run >= BARGE_WINDOWS:
+            turn.cancel()
+            await self.send(t="interrupted")
+            log.info("barge-in: turn cancelled")
+
+        for audio in turns:
             await self.turns.put(audio)
 
     async def on_text(self, raw: str) -> None:
