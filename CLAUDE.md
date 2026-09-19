@@ -566,10 +566,22 @@ not a design choice. `launcher.py` uses exactly four session methods and reads e
 
 `websockets` distinguishes binary and text frames natively — no framing code required.
 
-**Client shim**: accept the `google.genai.types` objects (`Blob`, `Content`, `FunctionResponse`) that
-`launcher.py` already constructs, and expose `receive()` as an async generator that **ends at each turn
-boundary** (Gemini's semantics — `launcher.py` re-enters it in a `while` loop). Then the robot-side diff is
-one line: the `connect()` call. Do not restructure `launcher.py`.
+**Client shim — `client/local_live.py`, written and verified without the robot.** It duck-types the
+`google.genai.types` objects launcher constructs (reads `.data`, `.parts[0].text`, `.id/.name/.response`)
+instead of importing the SDK, so the brain keeps no dependency on Google's client library — which is not
+installed on this machine anyway. `receive()` is an async generator that **ends at each turn boundary**
+(Gemini's semantics — launcher re-enters it in a `while` loop; get this wrong and the conversation stops
+after one turn). `go_away` and `session_resumption_update` are present and always None, because launcher
+checks them on every message and its reconnect loop stays load-bearing over Tailscale (§20 rule 17).
+
+Robot-side diff stays one line:
+
+```python
+async with local_live.connect(BRAIN_URI, config=config) as session:   # was client.aio.live.connect
+```
+
+`client/test_local_live.py` runs launcher's recv_loop **structurally unchanged** against a live brain —
+same fields, same `fn(**(fc.args or {}))` splat, same `turn_complete` exit — and passes.
 
 **Tool schemas**: `launcher.py:302-339` builds `tools` as a list of plain Python callables and relies on
 google-genai deriving declarations from signatures. The brain needs those schemas, so the robot must send
