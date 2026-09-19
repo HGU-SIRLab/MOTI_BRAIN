@@ -957,6 +957,34 @@ that paper calls fast interruption the cheapest source of perceived liveness. No
 is *not* in these numbers: `stop_secs = 1.5` (§9.1a) still elapses before the brain even
 considers the turn finished, so felt latency is that plus the figure above.
 
+### 13.4 ✅ `[MEASURED]` EXP-8 — voice-to-voice latency as a distribution (2026-09-19)
+
+`client/exp8_latency.py`, n=8 over four clips, measured from the client through the wire
+(what the user experiences), fresh session per run so history does not confound it.
+
+| | mean | p95 | min | max |
+|---|---|---|---|---|
+| **perceived** — speaking stops → first audio | **1.98s** | 2.81s | 1.22s | 2.81s |
+| **brain** — turn detected → first audio | **0.48s** | 1.31s | −0.28s | 1.31s |
+
+**76% of what the user waits through is the `stop_secs` silence, not this code.** The
+cascade — audio in, E4B, sentence chunking, Piper, out over a WebSocket — costs about
+half a second. The other 1.5s is the VAD waiting to be sure the person stopped talking.
+
+**This reprioritizes Q19.** Fixing smart-turn was filed as an optimization worth ~1.3s;
+it is in fact *the* latency lever, and nothing else on the list comes close. Quantization,
+MTP, a faster TTS — all of them optimize the 0.48s. Semantic turn detection attacks the
+1.5s. Perceived latency would go from ~1.98s to roughly 0.65s, which is a different class
+of conversation.
+
+Two notes on reading the numbers:
+- `brain` min is negative because the clips contain their own trailing silence, so the
+  VAD's countdown starts before the speaker's last word. Legitimate, not a timing bug.
+- An earlier version of this script measured from "all trailing silence sent" and reported
+  negative numbers throughout. The brain endpoints at `stop_secs` and begins replying
+  while the client is still sending the rest of its silence — an artifact of how the test
+  fed audio, not a result. Worth remembering when writing the next measurement.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
@@ -1119,7 +1147,7 @@ starting the next; do not run parallel blockers just to save days we do not need
 | ~~Q13b~~ | ~~Does multi-clip segmentation clear the 30s ceiling?~~ | ✅ **Resolved: yes — 20s × 2 = 1,004 tokens, no truncation (§12.3)** |
 | ~~Q13c~~ | ~~Comprehension and tone?~~ | ✅ **Resolved: matched a perfect transcript, and tone changed the reply (§12.4)** |
 | **Q18** | How often does prosody make the model fabricate situations, and can the persona suppress it? | Live use; §12.4 caveat |
-| **Q19** | Can smart-turn-v3's Whisper mel be reproduced correctly (numpy, no torch)? Worth ~1.3s on every turn (§9.1a). | Needs a reference implementation to diff against |
+| **Q19 ★** | Can smart-turn-v3's Whisper mel be reproduced correctly (numpy, no torch)? **EXP-8 shows this is the single biggest latency lever — 76% of perceived delay is the `stop_secs` wait it would remove (§13.4).** | Needs a reference implementation to diff against |
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | ~~Q14~~ | ~~Reproduce the young voice, or drop the pitch shift?~~ | ✅ **Resolved 2026-09-19: Piper's voice as-is, no pitch shift. `ENABLE_VOICE_SHIFT=false` (§8.3)** |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
