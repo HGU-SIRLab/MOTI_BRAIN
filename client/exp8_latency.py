@@ -39,7 +39,10 @@ URI = "ws://127.0.0.1:8765"
 CHUNK = 1600
 TAIL_SILENCE_SEC = 6.0   # natural pauses reach 2.98s; the veto can wait to 4.0s
 STOP_SECS = 1.5          # timer floor; the veto (§9.1c) may extend past it
-CLIPS = ["s1_recall", "s2_project", "s3_weekend", "s6_explain"]
+# Short spontaneous turns, cut from the tail of each monologue (the stretch after its
+# last long pause). Scripted clips have unnaturally short internal pauses; the full
+# monologues are several turns. These are one real turn each, spoken naturally.
+CLIPS = ["turn_s1", "turn_s2", "turn_s3", "turn_s4", "turn_s5", "turn_s6"]
 CONFIG = SimpleNamespace(
     system_instruction=("너는 공감 로봇 모티야. 사용자의 말에 따뜻하게 공감하며 대화해. "
                         "답변은 2~3문장으로 짧게 해. 이모지는 쓰지 마."),
@@ -88,8 +91,10 @@ async def one(stem: str) -> tuple[float, float, str]:
                 break
         stopped_at = await sender
 
-    detected_at = stopped_at + STOP_SECS      # when the VAD can first know the turn ended
-    return (first_audio - detected_at, first_audio - stopped_at, "".join(said).strip())
+    # `brain` is no longer "wait minus timer": the fast path (§9.1e) can close the turn
+    # before the timer, so subtracting a fixed 1.5s would understate it. Report the raw
+    # perceived figure twice rather than invent a component.
+    return (first_audio - stopped_at, first_audio - stopped_at, "".join(said).strip())
 
 
 def report(name: str, xs: list[float]) -> None:
@@ -106,14 +111,12 @@ async def main(runs: int) -> None:
         b, p, said = await one(stem)
         brain.append(b)
         perceived.append(p)
-        print(f"[{i+1:2d}] {stem:<12} brain {b:5.2f}s  perceived {p:5.2f}s  | {said[:40]}")
+        print(f"[{i+1:2d}] {stem:<10} perceived {p:5.2f}s  | {said[:46]}")
 
     print(f"\nEXP-8 (n={runs}):")
-    report("brain", brain)
     report("perceived", perceived)
-    share = STOP_SECS / statistics.mean(perceived) * 100
-    print(f"\n  체감 지연의 {share:.0f}%가 stop_secs({STOP_SECS}s) 대기다 — 뇌가 아니라 "
-          f"턴 감지가 병목이라는 뜻이고, 그게 Q19(smart-turn)의 가치다.")
+    print("\n  말을 멈춘 시점부터 로봇 소리가 나기까지. 빠른 경로(§9.1e) + 투기적\n"
+          "  생성(§9.1d)이 적용된 값이고, 참고로 Gemini Live는 0.5초 수준이다.")
 
 
 if __name__ == "__main__":

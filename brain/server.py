@@ -46,7 +46,9 @@ BACKCHANNEL_AFTER = 1.4
 # It never makes the robot speak sooner — it only has the answer ready when the turn is
 # confirmed, taking the brain's ~0.5s off what the user waits through. If the speaker
 # resumes, the work is thrown away; cancellation already costs 70ms (§13.3).
-SPECULATE_AFTER = 0.5
+# 0.2s, not 0.5s: the fast path closes the turn at 0.6s, so starting at 0.5s left only
+# 0.1s of head start and 5 of 6 turns adopted "0 ready" — nothing had been produced yet.
+SPECULATE_AFTER = 0.2
 # Closing a turn is driven by incoming audio, so a client that stops sending leaves it
 # open forever. launcher.py can do exactly that — its RMS gate suppresses silent audio
 # while the robot is "asleep" to avoid paying Gemini for it. Wall-clock backstop.
@@ -79,6 +81,7 @@ class Connection:
         self._spec_task: asyncio.Task | None = None
         self._spec_audio: bytes = b""       # the audio it was generated from
         self._spec_out: list[tuple[str, dict]] = []
+        self._spec_live = False             # confirmed: stop buffering, stream instead
         self._last_audio = 0.0
         self.detector = TurnDetector()
         self.session: Session | None = None
@@ -254,9 +257,17 @@ class Connection:
         # appending into a fresh list, and the prepared reply arrived as 0 events.
         buffer: list[tuple[str, dict]] = []
         self._spec, self._spec_audio, self._spec_out = turn, audio, buffer
+        self._spec_live = False
 
         async def collect(kind: str, payload: dict) -> None:
-            buffer.append((kind, payload))           # buffered, not sent
+            # Buffer until the turn is confirmed, then switch to sending live. Waiting
+            # for the whole turn before releasing anything made first-audio *worse* than
+            # no speculation at all: the first sentence is normally out in ~1.4s, but
+            # holding everything until the last sentence finished pushed it past 3.5s.
+            if self._spec_live:
+                await self.emit(kind, payload)
+            else:
+                buffer.append((kind, payload))
 
         self._spec_task = asyncio.create_task(turn.run(collect))
         log.info("speculating on %.1fs of audio", len(audio) / 2 / 16000)
@@ -271,22 +282,28 @@ class Connection:
         self._spec_out = []
 
     async def _flush_speculation(self) -> bool:
-        """Send the prepared reply if it answers exactly this turn."""
+        """Adopt the in-flight reply: send what is ready, then let the rest stream."""
         task, turn, out = self._spec_task, self._spec, self._spec_out
-        self._spec = self._spec_task = None
-        self._spec_out = []
         if task is None or turn is None:
             return False
+        head = len(out)
+        for kind, payload in out:
+            await self.emit(kind, payload)
+        self._spec_live = True               # collector now sends directly
+        self.current = turn                  # so barge-in can still cancel it
         try:
             await task
         except asyncio.CancelledError:
             return False
+        finally:
+            self.current = None
+            self._spec = self._spec_task = None
+            self._spec_out = []
+            self._spec_live = False
         if turn.cancelled:
             return False
-        for kind, payload in out:
-            await self.emit(kind, payload)
         await self.send(t="turn_complete")
-        log.info("speculation used (%d events)", len(out))
+        log.info("speculation adopted (%d ready, rest streamed)", head)
         return True
 
     async def watchdog(self) -> None:

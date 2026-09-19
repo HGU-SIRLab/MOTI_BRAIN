@@ -1205,6 +1205,38 @@ Two notes on reading the numbers:
   while the client is still sending the rest of its silence — an artifact of how the test
   fed audio, not a result. Worth remembering when writing the next measurement.
 
+### 13.5 ✅ `[MEASURED]` EXP-8 on real conversational turns (2026-09-19)
+
+Measured over the wire on six **short spontaneous turns**, cut from the tail of each
+monologue (the stretch after its last long pause) so each is one natural turn rather than a
+scripted read or a multi-turn narration.
+
+| | mean | p95 | min | max |
+|---|---|---|---|---|
+| speaking stops → first audio | **2.02 s** | 2.82 s | 1.42 s | 2.82 s |
+
+Breaks down roughly as **turn close ~0.6s + pipeline ~1.4s**, and the pipeline is
+first token 0.2s + generating the first sentence + TTS ~0.2s.
+
+**So the bottleneck moved.** It was turn detection (§13.4: 76% of the wait); the fast path
+(§9.1e) cut that to ~0.6s. What dominates now is **decoding the first sentence at 13 tok/s** —
+roughly a second for ~15 tokens. Nothing downstream can start until that sentence exists.
+
+This makes two previously-dismissed items relevant again:
+- **EXP-3 / MTP speculative decoding** (§5.4.5). Dismissed because TTFT was comfortable; TTFT
+  was never the problem. MTP attacks decode rate, which is.
+- **Quantization** (§5.4.6). Same reasoning — bf16 was kept because TTFT passed. Decode is
+  memory-bandwidth bound, so a q4 checkpoint should decode faster.
+
+**Speculative generation helps less than expected** and the measurement says why: it starts at
+0.2s into the pause while the fast path closes the turn at 0.6s, so 4 of 6 turns adopt it with
+"0 ready" — nothing has been produced yet. It pays off on the veto path, where the wait is
+seconds. Kept, because that is also when the user is waiting longest.
+
+An earlier version of it made things **worse**: it buffered the entire turn and released
+everything at confirmation, so first audio waited for the *last* sentence — 3.25s mean instead
+of 2.02s. It now flushes what is ready and streams the remainder.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
