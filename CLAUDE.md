@@ -1027,6 +1027,22 @@ reference transcript, character for character.
 §12.3); putting it before the instruction makes `[system][audio]` a shared prefix, so the reply call
 and the transcription call hit the same cache entry instead of paying the audio prefill twice.
 
+🔴 **That last clause is false as implemented, found 2026-09-19 by reading the code against this
+paragraph.** The transcription call had to be given **its own system prompt and no history** — with the
+persona it obeys "always call `set_emotion` first" and returns `set_emotion(tired)\n며칠 내내…`, putting
+tool syntax into the conversation log as words the user never said. Necessary fix, but it means the two
+calls are `[transcriber][audio]` and `[persona][history…][audio]`: **they diverge at token 0, so there is
+no shared prefix and the KV cache cannot dedupe the audio between them.**
+
+The ordering itself stays — it is still right within each call, and harmless. What dies is the reason
+this paragraph gave for it, and one consequence is worth carrying to §13.7: **vLLM's multimodal processor
+cache was the only thing deduplicating audio work across those two calls.** Disabling it therefore costs
+a genuine second encode, which is consistent with the pipeline floor moving 1.47s → 1.61s (~0.26s
+predicted for that 9s clip, §12.3).
+
+Fourth instance of the pattern §14 now warns about: a later fix silently invalidated an earlier
+paragraph's premise, and nothing failed.
+
 **Gap 2 — function calling was never tested**, only asserted by §14. The entire robot depends on it
 (`remember_fact`, `set_emotion`, `play_manual_motion`, `express_gesture`, quiz tools).
 
@@ -1504,8 +1520,42 @@ starting the next; do not run parallel blockers just to save days we do not need
 | **Tone-driven fabrication** | 🟡 **MED — new in v6** | §12.4: on a bright-toned reading the model invented a situation that was never said. Prosody sensitivity cuts both ways. Watch in live use; the text-only path does not have this failure mode. |
 | Latency above target | 🟡 MED | E4B → MTP → QAT → shorter context → E2B. New v6 contributors: voice-shift buffer (§13) and, in phase 2, Tailscale relay fallback. |
 | **Tailscale falls back to DERP relay (phase 2)** | 🟡 **MED — new in v6** | Relayed WireGuard adds unpredictable latency, which lands directly in the voice loop. Require a **direct** connection (`tailscale status` shows `direct`, not `relay`) and treat relayed operation as a degraded mode. |
-| Missing AEC breaks barge-in | 🟡 MED | **v6 correction**: the robot repo's 30–36dB validation was on **Windows**; on Jetson the wheel is absent and its documented PulseAudio fallback was configured on a since-reverted Xavier board. **User states this is already solved on the Orin Nano — the robot repo's docs are stale and should be updated there.** This matters more now: replacing Gemini's server-side VAD with ours makes echo-induced false barge-in *our* problem. |
+| Missing AEC breaks barge-in | 🔴 **HIGH — raised 2026-09-19 after reading the robot's code** | See below. Was MED on the user's statement that it is solved on the Orin Nano; the code says that statement needs checking before it is relied on. |
 | CMA fragmentation | 🟢 LOW | Never touch `cma=`; reboot if hit |
+
+### 18.1 🔴 AEC — the robot disables it silently, and our barge-in is 5× more aggressive than Gemini's
+
+Read out of `MOTI-HRI` directly rather than taken from the v6 note, because this is the single thing most
+likely to make the first robot session look broken.
+
+**The robot really does implement AEC**: `media/audio_manager.py` has `EchoCanceller`, a WebRTC AEC3
+binding (`aec_audio_processing`) shared by the mic and speaker callbacks, feeding the far end in at the
+near-end frame size. It is wired into `MicStreamer._callback` via `process_near()`. Good code.
+
+**But it turns itself off without failing.** `audio_manager.py:25-32` probes the import at module load
+and, on `ImportError`, prints a warning and sets `ENABLE_AEC = False` — added 2026-08-24 during the
+Jetson port, because the robot used to *crash* on startup instead. And `requirements-jetson.txt:121`
+still says, of that exact package, *"Linux 휠이 아예 없음(재확인)"* while `requirements.txt` (the
+Windows/dev list) installs it normally.
+
+So the failure mode is: **one warning line scrolls past at boot, the robot works fine, and echo
+cancellation is simply absent.** Nothing later reports it.
+
+Three things make this worse for us specifically than it was for Gemini:
+1. **Our barge-in is 0.07s** (§13.3) against `duet`'s 0.198s reference. It is built to react to the
+   faintest onset of speech, which is exactly what leaked speaker audio looks like.
+2. **Turn detection moved to our side** (§4). With Gemini, echo-induced false barge-in was Google's
+   problem; now every echo frame reaches our Silero VAD.
+3. `AEC_STREAM_DELAY_MS` defaults to 100 and its own comment says it is **not measured**.
+
+`[MANDATORY]` **Before the first real session, confirm which path is live** — not from memory:
+```bash
+python3 -c "import aec_audio_processing; print('AEC 휠 있음')"   # on the robot
+```
+If that raises, AEC is off regardless of `.env`, and §9.2's mitigations (headset to isolate, or lower
+speaker volume / separate mic) apply until it is fixed. This also finally answers **Q16**: the mechanism
+is the `aec_audio_processing` wheel, the repo documents it as unavailable on aarch64, and whether a build
+of it exists on this particular Orin Nano is what the command above settles.
 | ~~Piper GPL contamination~~ | ✅ **Closed in v6** | Research-only use (§1, §15). Keep the §20 rule 7 flag for a future release decision. |
 
 ---

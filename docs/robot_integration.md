@@ -80,15 +80,32 @@ ENABLE_VOICE_SHIFT=false
 
 `BRAIN_URI`를 `.env`로 주고 싶으면 위 2번의 기본값 대신 거기에 적어도 된다.
 
-### `ENABLE_AEC`는 반드시 확인할 것
+### 🔴 `ENABLE_AEC` — 먼저 이 한 줄부터 돌릴 것
 
-`.env.example`은 `true`지만 `requirements-jetson.txt`는 *"aec-audio-processing: Linux 휠이
-아예 없음 → `ENABLE_AEC=false` + PulseAudio `module-echo-cancel`로 우회"*라고 적고 있고,
-그 PulseAudio 설정은 **이후 revert된 Xavier에서 확정**된 것이다. Orin Nano에서 어떻게
-해결됐는지가 저장소에 기록돼 있지 않다(Q16).
+```bash
+python3 -c "import aec_audio_processing; print('AEC 휠 있음')"   # 로봇에서
+```
 
-**지금 실제로 어떤 경로로 AEC가 동작하는지 확인하고 저장소 문서를 갱신할 것.** 아래
-4번의 첫 번째 확인 항목이 이것이다.
+**이게 에러가 나면 `.env`에 무엇을 적어두었든 AEC는 꺼진 상태다.**
+
+`media/audio_manager.py:25-32`가 모듈 로드 시점에 이 import를 미리 해보고, 실패하면 경고
+한 줄만 출력하고 `ENABLE_AEC = False`로 바꾼 뒤 그냥 진행한다(2026-08-24 Jetson 이식 때
+추가 — 그 전에는 로봇이 기동 중에 죽었다). 그리고 `requirements-jetson.txt:121`은 바로 그
+패키지에 대해 *"Linux 휠이 아예 없음(재확인)"*이라고 적고 있다.
+
+즉 **부팅 때 경고 한 줄이 스크롤로 지나가고, 로봇은 멀쩡히 돌고, 에코 캔슬만 없다.**
+이후에 아무것도 이걸 알려주지 않는다.
+
+우리한테는 이게 Gemini 때보다 나쁩니다:
+- 우리 barge-in은 **0.07초**다(§13.3). 아주 작은 발화 시작에도 반응하도록 만들어져 있고,
+  새어 들어온 스피커 소리가 정확히 그렇게 생겼다
+- 턴 감지가 우리 쪽으로 넘어왔다(§4). 예전엔 에코 오탐이 구글 문제였지만 이제 에코 프레임이
+  전부 우리 Silero VAD로 들어온다
+- `AEC_STREAM_DELAY_MS` 기본값 100ms는 **실측된 값이 아니라고 코드 주석이 직접 말한다**
+
+휠이 없으면 §9.2의 임시 조치(이어폰으로 에코 경로 차단, 또는 스피커 볼륨 낮추기/마이크
+떼어놓기)로 나머지를 먼저 검증하고, AEC는 따로 해결한다. 확인 결과는 로봇 저장소 문서에
+반영할 것 — 이게 Q16이다.
 
 ---
 
