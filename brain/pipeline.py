@@ -81,7 +81,7 @@ _BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
 SILENT_TOKEN = "<SILENT>"
 
 
-def _parse_call(body: str) -> dict | None:
+def _parse_call(body: str, first: dict | None = None) -> dict | None:
     """`call:set_emotion{emotion:<|"|>sad<|"|>}` -> {id, name, args}.
 
     `args` is a dict, not a JSON string, and the field is named `args` — both because
@@ -106,14 +106,20 @@ def _parse_call(body: str) -> dict | None:
     try:
         call["args"] = json.loads(raw)
     except json.JSONDecodeError:
-        pass                                         # never crash the turn over markup
+        # Positional form: `set_emotion(tender)` has a value but no key. The declaration
+        # supplies the key; without it the argument is lost silently.
+        inner = raw[1:-1].strip().strip('"\'')
+        key = (first or {}).get(call["name"])
+        if key and inner and not any(c in inner for c in ':=,'):
+            call["args"] = {key: inner}
     return call
 
 
 _OPENERS = {"{": "}", "(": ")"}                      # see _find_bare_call
 
 
-def _find_bare_call(buf: str, names: tuple[str, ...]) -> tuple[int, int, dict] | None:
+def _find_bare_call(buf: str, names: tuple[str, ...],
+                    first: dict | None = None) -> tuple[int, int, dict] | None:
     """Locate an unwrapped `set_emotion{...}` or `set_emotion(...)` call.
 
     Only declared tool names count — matching any `word{...}` would swallow ordinary
@@ -132,7 +138,7 @@ def _find_bare_call(buf: str, names: tuple[str, ...]) -> tuple[int, int, dict] |
             if j == -1:
                 best = (i, -1, {})                   # opened, not yet closed: hold it
                 continue
-            call = _parse_call("call:" + buf[i:j + 1])
+            call = _parse_call("call:" + buf[i:j + 1], first)
             if call:
                 best = (i, j + 1, call)
     return best
@@ -161,7 +167,8 @@ def _holdback(text: str, names: tuple[str, ...]) -> int:
     return best
 
 
-def strip_tool_calls(buf: str, names: tuple[str, ...] = ()) -> tuple[str, list[dict], str]:
+def strip_tool_calls(buf: str, names: tuple[str, ...] = (),
+                     first: dict | None = None) -> tuple[str, list[dict], str]:
     """Split a streamed buffer into (speakable text, calls, tail to hold back).
 
     The model emits tool calls in two shapes, both as plain `content` (vLLM 0.19.0 never
@@ -174,7 +181,7 @@ def strip_tool_calls(buf: str, names: tuple[str, ...] = ()) -> tuple[str, list[d
     calls: list[dict] = []
 
     def take(m: re.Match) -> str:
-        call = _parse_call(m.group(1))
+        call = _parse_call(m.group(1), first)
         if call:
             calls.append(call)
         return ""
@@ -182,7 +189,7 @@ def strip_tool_calls(buf: str, names: tuple[str, ...] = ()) -> tuple[str, list[d
     text = _TOOL_REGION.sub(take, buf)
 
     while names:
-        hit = _find_bare_call(text, names)
+        hit = _find_bare_call(text, names, first)
         if hit is None:
             break
         i, j, call = hit
@@ -360,6 +367,15 @@ class Turn:
         self.session, self.tts, self.parts = session, tts, audio_parts(pcm)
         self.tool_names = tuple(
             t.get("function", {}).get("name", "") for t in session.tools) or ()
+        # The model also writes calls positionally — `set_emotion(tender)` — and there is
+        # no key to parse out of that. The declaration has one, so map the lone value onto
+        # the first required parameter. Without this the call arrives with `args: {}`,
+        # `launcher.py` runs `set_emotion()`, its try/except swallows the TypeError, and
+        # the robot's face simply never changes. Silent, and only visible on video.
+        self.tool_first_param = {
+            t["function"]["name"]: (t["function"].get("parameters", {})
+                                    .get("required") or [None])[0]
+            for t in session.tools if t.get("function", {}).get("name")}
         self.cancelled = False
         self.spoke = False                  # did the user actually hear anything?
         self.silent = False                 # model chose not to answer (§9.3)
@@ -411,7 +427,7 @@ class Turn:
             raw += value
             # Pull tool markup out before anything can reach TTS; `raw` keeps only the
             # part that might still turn out to be a tool call.
-            clean, found, raw = strip_tool_calls(raw, self.tool_names)
+            clean, found, raw = strip_tool_calls(raw, self.tool_names, self.tool_first_param)
             calls += found
             if SILENT_TOKEN in clean:
                 clean = clean.replace(SILENT_TOKEN, "")

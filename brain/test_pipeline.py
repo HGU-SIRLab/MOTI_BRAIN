@@ -98,7 +98,9 @@ def test_strip_tool_calls() -> None:
     # a delta ending on a one-character prefix ("...r" of `remember_fact`) made the whole
     # call dribble out a character at a time. All three would have been spoken aloud.
     wide = ("set_emotion", "remember_fact", "play_gesture", "forget_me")
+    first = {"set_emotion": "emotion", "remember_fact": "key", "play_gesture": "name"}
     shapes = [
+        ("set_emotion(tender)안녕하세요.", 1),        # positional: key comes from the schema
         ('set_emotion(emotion="tender")안녕하세요.', 1),
         ('remember_fact(key="major", value="전산전자")기억할게요.', 1),
         ("forget_me()다 지웠어요.", 1),
@@ -111,14 +113,16 @@ def test_strip_tool_calls() -> None:
             raw, spoken, found = "", "", []
             for i in range(0, len(text_in), chunk):
                 raw += text_in[i:i + chunk]
-                clean, calls, raw = strip_tool_calls(raw, wide)
+                clean, calls, raw = strip_tool_calls(raw, wide, first)
                 found += calls
                 spoken += clean
             spoken += raw
             leaked = [n for n in (*wide, "tool_call") if n in spoken]
             assert not leaked, f"chunk={chunk} 누출 {leaked}: {spoken!r}"
             assert len(found) == n_calls, f"chunk={chunk} {text_in!r} -> {found}"
-    print("strip_tool_calls OK (4가지 형태 × 7가지 청크 경계)")
+            if n_calls and found[0]["name"] == "set_emotion":
+                assert found[0]["args"].get("emotion") == "tender", found
+    print("strip_tool_calls OK (5가지 형태 × 7가지 청크 경계, 위치 인자 포함)")
 
 
 def load_pcm16k(path: Path) -> bytes:
