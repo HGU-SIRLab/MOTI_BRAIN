@@ -15,6 +15,14 @@ docker rm -f "$NAME" 2>/dev/null || true
 # 32768: MOTI's real persona (build_persona_system_instruction) is 18,344 tokens on its
 # own, so 16384 cannot serve a single request. Leaves room for audio (750/30s) + history.
 #
+# --mm-processor-cache-gb 0 disables vLLM's multimodal processor cache. With it on, the
+# engine crashed mid-run with `AssertionError: Expected a cached item for mm_hash=...`
+# and returned HTTP 500. The trigger is our own pattern: the transcription call and the
+# reply call go out concurrently carrying the *same* audio, so two in-flight requests
+# share an mm_hash and race in that cache. Turning it off costs re-deriving audio
+# features twice per turn, which is cheap — prefix caching, which handles the expensive
+# part, is separate and unaffected.
+#
 # EXP-3 (speculative decoding) is BLOCKED by this container — see §13.6. Both paths fail
 # at startup, so neither flag is here:
 #   draft_model : transformers in this image does not know model type `gemma4_assistant`,
@@ -31,6 +39,7 @@ docker run -d --name "$NAME" --runtime=nvidia --network host \
   vllm serve "$MODEL" \
     --max-model-len 32768 \
     --gpu-memory-utilization 0.40 \
+    --mm-processor-cache-gb 0 \
     --enable-auto-tool-choice \
     --reasoning-parser gemma4 \
     --tool-call-parser gemma4

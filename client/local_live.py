@@ -99,6 +99,7 @@ class Session:
         self._pending_rate: int | None = None
         self._pending_kind = "reply"
         self.audio_kind = "reply"       # "backchannel" for EXP-12 fillers, not a reply
+        self.last_error: str | None = None
         self.resumed = False            # set from the brain's `ready` (§11.5)
         self.turns_carried = 0
         self._reader = asyncio.create_task(self._read())
@@ -138,7 +139,11 @@ class Session:
                                         args=c.get("args") or {})
                         for c in payload["calls"]])
                 elif kind == "error":
-                    continue
+                    # Must still end the turn. Swallowing this left the client waiting
+                    # forever when the brain failed a turn — launcher.py would hang the
+                    # same way, since its recv_loop only exits on turn_complete.
+                    self.last_error = payload.get("detail", "brain error")
+                    msg.server_content.turn_complete = True
                 await self._inbox.put(msg)
         except websockets.ConnectionClosed:
             pass
