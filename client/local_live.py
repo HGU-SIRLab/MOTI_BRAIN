@@ -97,6 +97,8 @@ class Session:
         self._ws = ws
         self._inbox: asyncio.Queue = asyncio.Queue()
         self._pending_rate: int | None = None
+        self._pending_kind = "reply"
+        self.audio_kind = "reply"       # "backchannel" for EXP-12 fillers, not a reply
         self.resumed = False            # set from the brain's `ready` (§11.5)
         self.turns_carried = 0
         self._reader = asyncio.create_task(self._read())
@@ -105,6 +107,7 @@ class Session:
         try:
             async for frame in self._ws:
                 if isinstance(frame, bytes):
+                    self.audio_kind = self._pending_kind
                     msg = _empty_message()
                     msg.data = frame
                     await self._inbox.put(msg)
@@ -113,6 +116,7 @@ class Session:
                 kind = payload.get("t")
                 if kind == "audio":
                     self._pending_rate = payload.get("rate")
+                    self._pending_kind = payload.get("kind", "reply")
                     continue
                 if kind == "ready":
                     self.resumed = bool(payload.get("resumed"))
@@ -181,8 +185,10 @@ class Session:
 
 
 class _Connect:
-    def __init__(self, uri: str, config):
-        self._uri, self._config = uri, config
+    def __init__(self, uri: str, config, backchannel: bool = True,
+                 backchannel_after: float | None = None):
+        self._uri, self._config, self._backchannel = uri, config, backchannel
+        self._backchannel_after = backchannel_after
         self._ws = None
         self._session: Session | None = None
 
@@ -192,7 +198,9 @@ class _Connect:
         tools = getattr(self._config, "tools", None) or []
         await self._ws.send(json.dumps(
             {"t": "hello", "system": system, "tools": tool_schemas(tools),
-             "session_id": SESSION_ID},
+             "session_id": SESSION_ID, "backchannel": self._backchannel,
+             **({"backchannel_after": self._backchannel_after}
+                if self._backchannel_after is not None else {})},
             ensure_ascii=False))
         self._session = Session(self._ws)
         return self._session
@@ -204,7 +212,9 @@ class _Connect:
             await self._ws.close()
 
 
-def connect(uri: str, config=None, **_ignored) -> _Connect:
+def connect(uri: str, config=None, backchannel: bool = True,
+            backchannel_after: float | None = None, **_ignored) -> _Connect:
     """Signature-compatible with `client.aio.live.connect(model=..., config=...)`;
-    `model` is accepted and ignored, since the brain decides what it serves."""
-    return _Connect(uri, config)
+    `model` is accepted and ignored, since the brain decides what it serves.
+    `backchannel` toggles EXP-12 for this session."""
+    return _Connect(uri, config, backchannel, backchannel_after)

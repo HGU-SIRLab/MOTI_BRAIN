@@ -50,6 +50,7 @@ async def main(stem: str = "a1_tired", barge_with: str | None = None) -> None:
     first_audio_at = None
     speaking = asyncio.Event()      # set once reply audio starts arriving
     interrupted_at = None
+    first_backchannel_at = None
 
     async with websockets.connect(URI, max_size=None) as ws:
         await ws.send(json.dumps({"t": "hello", "system": SYSTEM, "tools": TOOLS}))
@@ -69,6 +70,12 @@ async def main(stem: str = "a1_tired", barge_with: str | None = None) -> None:
                 kind = m.get("t")
                 if kind == "audio":
                     pending_rate = m["rate"]
+                    pending_kind = m.get("kind", "reply")
+                    if pending_kind == "backchannel":
+                        nonlocal first_backchannel_at
+                        if first_backchannel_at is None:
+                            first_backchannel_at = time.perf_counter()
+                        print("  (맞장구)")
                 elif kind == "transcript":
                     print(f"  [{m['role']}] {m['text']}")
                 elif kind == "tool_call":
@@ -146,6 +153,8 @@ async def main(stem: str = "a1_tired", barge_with: str | None = None) -> None:
     print(f"\n응답 음성 {secs:.1f}s @ {rate}Hz -> {out}")
     if first_audio_at:
         print(f"침묵 종료 시점부터 첫 오디오까지: {first_audio_at - t_sent_end:.2f}s")
+    if first_backchannel_at:
+        print(f"  (그중 첫 맞장구: {first_backchannel_at - t_sent_end:.2f}s)")
 
 
 if __name__ == "__main__":

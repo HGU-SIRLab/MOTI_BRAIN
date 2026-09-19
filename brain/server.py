@@ -26,6 +26,7 @@ from pathlib import Path
 import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from brain.backchannel import Backchannel  # noqa: E402
 from brain.pipeline import Session, Tts, Turn  # noqa: E402
 from brain.vad import TurnDetector  # noqa: E402
 
@@ -36,6 +37,11 @@ TOOL_RESULT_TIMEOUT = 10.0
 # late. Three is ~96ms, inside the ~200ms reaction §4.2 calls the cheapest source of
 # perceived liveness.
 BARGE_WINDOWS = 3
+# EXP-12 (§4.2): how far into a pause to drop a short "응".
+# Measured against the real pause distribution (§12.7): at 0.6s it fires *inside* six
+# utterances across five clips — the robot talking over someone mid-sentence. Overlap
+# only disappears at 1.4s, because the longest intra-utterance pause we have is 1.38s.
+BACKCHANNEL_AFTER = 1.4
 
 log = logging.getLogger("brain")
 
@@ -50,9 +56,15 @@ MAX_SESSIONS = 8
 class Connection:
     """One robot. Owns its turn detector and conversation state."""
 
-    def __init__(self, ws, tts: Tts):
+    def __init__(self, ws, tts: Tts, backchannel: Backchannel):
         self.ws = ws
         self.tts = tts
+        self.backchannel = backchannel
+        self._acked = False          # one backchannel per pause, not per audio chunk
+        # Per-session switch rather than a server flag: EXP-12 is an A/B, and restarting
+        # this server costs ~33 minutes (§9.1a note on model loading).
+        self.backchannel_on = True
+        self.backchannel_after = BACKCHANNEL_AFTER
         self.detector = TurnDetector()
         self.session: Session | None = None
         self.turns: asyncio.Queue = asyncio.Queue()
@@ -67,8 +79,11 @@ class Connection:
         if kind == "audio":
             # Rate travels in a text frame ahead of the bytes: Piper is 22,050Hz while
             # the robot's playback path was built for Gemini's 24kHz (§8.3), so the
-            # client must be told, not assume.
-            await self.send(t="audio", rate=payload["rate"], bytes=len(payload["pcm"]))
+            # client must be told, not assume. `kind` separates a real reply from an
+            # EXP-12 acknowledgement — the robot should not log "응" as something Moti
+            # said, and may want to duck it differently.
+            await self.send(t="audio", rate=payload["rate"], bytes=len(payload["pcm"]),
+                            kind=payload.get("kind", "reply"))
             await self.ws.send(payload["pcm"])
         elif kind == "transcript":
             await self.send(t="transcript", role=payload["role"], text=payload["text"])
@@ -136,6 +151,9 @@ class Connection:
             return
         turns = self.detector.feed(pcm)
 
+        if self.detector.speech_run:
+            self._acked = False      # they are talking again; arm for the next pause
+
         # Barge-in (§9.2, §11.0-1/-4): the user started talking while Moti was replying.
         # Cancel generation *and* synthesis, and tell the robot — it stops playback and
         # clears its queue, which is the half of the contract we cannot do from here.
@@ -150,6 +168,19 @@ class Connection:
             await self.send(t="interrupted")
             log.info("barge-in: turn cancelled")
 
+        # EXP-12: the user has stopped but the VAD is not yet sure. Rather than 1.5s of
+        # dead air, acknowledge. This does not make the reply arrive sooner — it stops the
+        # robot seeming deaf while it waits (§4.2, §13.4).
+        if (self.backchannel_on and self.current is None and not self._acked
+                and turn is None and self.detector.in_speech
+                and self.detector.silence_secs >= self.backchannel_after):
+            self._acked = True
+            clip = self.backchannel.pick()
+            await self.emit("audio", {"pcm": clip, "rate": self.backchannel.rate,
+                                      "kind": "backchannel"})
+            log.info("backchannel (%.0fms of silence)",
+                     self.detector.silence_secs * 1000)
+
         for audio in turns:
             await self.turns.put(audio)
 
@@ -158,6 +189,9 @@ class Connection:
         kind = msg.get("t")
         if kind == "hello":
             sid = msg.get("session_id") or ""
+            self.backchannel_on = bool(msg.get("backchannel", True))
+            self.backchannel_after = float(msg.get("backchannel_after",
+                                                   BACKCHANNEL_AFTER))
             prior = SESSIONS.get(sid)
             if prior is not None:
                 # Resume. Take the *new* persona: launcher rebuilds it on reconnect and
@@ -198,8 +232,8 @@ class Connection:
                 await self.send(t="error", detail="turn failed")
 
 
-async def handle(ws, tts: Tts) -> None:
-    conn = Connection(ws, tts)
+async def handle(ws, tts: Tts, backchannel: Backchannel) -> None:
+    conn = Connection(ws, tts, backchannel)
     worker = asyncio.create_task(conn.worker())
     log.info("robot connected: %s", ws.remote_address)
     try:
@@ -219,8 +253,10 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     tts = Tts()                     # load once; per-turn loading would dominate latency
-    log.info("Piper ready (%dHz). listening on ws://%s:%d", tts.rate, HOST, PORT)
-    async with websockets.serve(lambda ws: handle(ws, tts), HOST, PORT,
+    backchannel = Backchannel(tts)  # pre-synthesized; a live call would defeat the point
+    log.info("Piper ready (%dHz), %d backchannel clips. listening on ws://%s:%d",
+             tts.rate, len(backchannel.clips), HOST, PORT)
+    async with websockets.serve(lambda ws: handle(ws, tts, backchannel), HOST, PORT,
                                 max_size=None):      # audio frames are large
         await asyncio.Future()
 

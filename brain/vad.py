@@ -60,6 +60,15 @@ class TurnDetector:
         return self._speaking
 
     @property
+    def silence_secs(self) -> float:
+        """How long the current pause has lasted, while still inside a turn.
+
+        Backchanneling (EXP-12) reads this: it fires part-way through the pause, well
+        before `stop_secs` decides the turn is over.
+        """
+        return self._silence * WINDOW / RATE
+
+    @property
     def speech_run(self) -> int:
         """Consecutive speech windows in the current run (32ms each).
 

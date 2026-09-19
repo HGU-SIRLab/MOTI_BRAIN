@@ -848,6 +848,43 @@ the second half; the single-clip reply did not, and nothing in the response said
 Enough to decide the architecture (which is what §12 experiments are for, §0-A row 6), not enough to
 publish. Re-run properly if a paper happens.
 
+### 12.7 ⚠️ `[MEASURED]` EXP-12 — backchanneling has almost no window (2026-09-19)
+
+Built and measured. The conclusion is not the one expected: **EXP-12 is not independent of
+Q19b, it is blocked by the same thing.**
+
+Implementation is cheap and works — four short acknowledgements ("응", "응...", "어", "음")
+pre-synthesized at startup (0.38s total), trimmed of Piper's padding from 0.81s down to
+0.23–0.34s, never repeating consecutively, emitted with `kind:"backchannel"` so the robot
+does not log them as things Moti said.
+
+The problem is *when* to fire. Against the real pause distribution:
+
+| trigger after | fires mid-utterance | fires at turn end |
+|---|---|---|
+| 0.6s | **6** | 5 |
+| 0.8s | 3 | 5 |
+| 1.0s | 1 | 5 |
+| 1.2s | 1 | 5 |
+| **1.4s** | **0** | 5 |
+
+Six mid-utterance fires across five clips at 0.6s — the robot talking over someone who
+paused to think. Overlap only vanishes at **1.4s**, because the longest intra-utterance
+pause we have is 1.38s (§9.1a). And `stop_secs` is 1.5s. **The safe window is 0.1s wide.**
+
+So the acknowledgement lands at 1.4s against a reply at ~1.98s: it covers 0.58s of a 1.98s
+silence, not the 1.4s the idea promised. Real, but marginal.
+
+The root cause is identical to Q19: **without semantic turn detection a pause is just a
+pause**, and any threshold that avoids interrupting people is necessarily too late to help
+much. Note the corollary — if Q19b lands, `stop_secs` drops to ~0.2s, the reply arrives
+around 0.65s, and backchanneling becomes largely unnecessary. **Q19b is the answer to both
+problems; EXP-12 is a workaround for a window that barely exists.**
+
+Default set to 1.4s (safe). Per-session overrides (`backchannel`, `backchannel_after` in
+`hello`) exist because restarting the brain costs ~33 minutes, which makes server-level
+flags useless for an A/B.
+
 ### 12.6 `[MEASURED]` Two gaps the deletion opened, both closed
 
 Removing the STT leg quietly broke something v5 had counted as a *strength*. Found by re-auditing
