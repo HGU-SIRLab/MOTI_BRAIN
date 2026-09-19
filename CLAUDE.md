@@ -484,6 +484,49 @@ which is the exact failure §9.1a's 1.5s exists to prevent.
 **Unblocked by data, not code**: a handful of spontaneous conversational recordings — someone
 talking naturally, including pauses that are *not* turn ends. Q19b.
 
+### 9.1c ✅ `[MEASURED]` Q19b resolved — and it overturns the latency plan (2026-09-19)
+
+Six spontaneous recordings (25–32s each, ~3 minutes total) with self-labelling built in:
+every pause where the speaker *continued* is ground truth "not finished", the end of each
+file is "finished". No scripting — that was the flaw in the earlier set.
+
+**Finding 1 — the headline, and it is not about smart-turn.** Natural thinking pauses reach
+**2.98s**, more than double the 1.38s seen in scripted reads. `stop_secs = 1.5` therefore cuts
+the speaker off at **19 of 22 pauses** — roughly one false interruption every ten seconds of
+natural speech. The current setting is not slightly conservative, it is unusable, and this was
+invisible until spontaneous audio existed.
+
+**Finding 2 — smart-turn works on this material.** Median 0.019 for "still going" versus 0.880
+for "finished". The earlier 2/5 was the test set, exactly as suspected (§9.1b).
+
+**Finding 3 — direction matters more than accuracy.** The obvious wiring (end the turn *early*
+when confident) measured **worse than no smart-turn at all**: 24 wrong splits against 19,
+because it can only add endpoints, never prevent the timer from firing. Inverting it to a
+**veto** — when the timer expires, ask, and extend the wait if the speaker is judged still
+going — is what produced the gain.
+
+**Finding 4 — the honest comparison, which shrinks the win.** A fixed longer timer does nearly
+as well:
+
+| configuration | wrong splits | wait at a real ending |
+|---|---|---|
+| timer 1.5s (current) | **19** | 0.80s |
+| timer 3.2s, no smart-turn | 0 | 2.51s |
+| **veto @0.7, max 4.0s** | **1** | **2.05s** |
+
+smart-turn buys 0.46s over simply raising `stop_secs` to 3.2. **My earlier projection that this
+would take perceived latency from 1.98s to ~0.65s was wrong** (§13.4). That assumed a working
+smart-turn would permit a *short* timer; on spontaneous speech the early-end direction is what
+fails, so the wait stays.
+
+**Shipping the veto anyway**, for one reason: the fixed timer's clean score is an artifact of
+this sample's longest pause being 2.98s. One longer pause and it interrupts; the veto adapts.
+It also degrades to timer-only if the model fails to load.
+
+**Latency now has to be re-measured** — EXP-8's 1.98s was taken on scripted clips whose pauses
+were short. Expect roughly 3.2s on natural speech, whichever endpointing is used. That is the
+real number, and it is worse than previously recorded.
+
 ### 9.2 Barge-in
 `[OFFICIAL]` Silero VAD + smart-turn-v3 together give accurate, low-latency turn start/stop signals. v5 relied on Pipecat to turn those signals into interruption logic that yields to a real interruption without reacting to brief mid-sentence pauses — **we now implement that logic ourselves** (§11.0 items 1 and 4).
 

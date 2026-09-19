@@ -4,12 +4,21 @@ Silero VAD over ONNX Runtime — no torch. That is deliberate: this machine expo
 global PYTHONPATH pointing at HARU's ROS venv, so any pip torch lands next to a Jetson
 torch and breaks (see the troubleshooting memory). The ONNX path avoids the question.
 
-smart-turn-v3 was attempted and is NOT used — see smart_turn.py for the evidence that the
-hand-rolled Whisper mel is wrong (silence and white noise both score *higher* than finished
-speech). Endpointing therefore rests on a silence threshold alone, and `stop_secs` is set from
-measurement, not taste: intra-utterance pauses in our own recordings reach 1.38s (the emotionally suppressed take), so anything
-shorter splits a single utterance into several turns. The cost is that this 1.5s lands on every
-turn's latency — which is exactly what a working smart-turn would buy back.
+Endpointing is a hybrid (§9.1c): smart-turn ends the turn early when it is confident the
+speaker finished; otherwise the silence timer is the backstop. Neither alone is good enough.
+
+The timer alone is genuinely bad on spontaneous speech. Natural thinking pauses in our
+recordings reach **2.98s**, so `stop_secs=1.5` cuts the user off at 19 of 22 pauses. Raising
+it to clear 2.98s would put a 3-second wait on every single turn.
+
+smart-turn is wired as a **veto on the timer, not an accelerator**. When the timer is about to
+end the turn, smart-turn is asked whether the speaker actually finished; if it says no, the wait
+is extended up to `max_wait`. Measured on spontaneous speech, internal pauses score a median of
+0.019 — it is confident, and honouring that is what removes false interruptions.
+
+The first attempt did the opposite (end *early* when confident) and measured **worse than no
+smart-turn at all**: it can only add splits, never prevent them, because the timer still fires
+at 1.5s regardless. Direction matters more than threshold here.
 """
 from __future__ import annotations
 
@@ -36,9 +45,21 @@ class TurnDetector:
     """
 
     def __init__(self, threshold: float = 0.5, stop_secs: float = 1.5,
-                 pad_secs: float = 0.3, min_speech_secs: float = 0.3):
+                 pad_secs: float = 0.3, min_speech_secs: float = 0.3,
+                 endpoint_confidence: float = 0.7, max_wait: float = 4.0):
         self.session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
         self.threshold = threshold
+        # When the timer expires, smart-turn gets a veto: below `endpoint_confidence` the
+        # speaker is judged still going and the wait extends, to at most `max_wait`. The
+        # cap matters — a wrong veto must not hang the conversation.
+        self.endpoint_confidence = endpoint_confidence
+        self.max_wait_windows = max(1, int(max_wait * RATE / WINDOW))
+        self._smart = None
+        try:
+            from brain.smart_turn import SmartTurn
+            self._smart = SmartTurn()
+        except Exception:                        # noqa: BLE001 — degrade to timer only
+            pass
         self.stop_windows = max(1, int(stop_secs * RATE / WINDOW))
         self.pad_windows = max(1, int(pad_secs * RATE / WINDOW))
         self.min_speech_windows = max(1, int(min_speech_secs * RATE / WINDOW))
@@ -54,6 +75,8 @@ class TurnDetector:
         self._silence = 0
         self._speech_windows = 0
         self._run = 0                    # consecutive speech windows right now
+        self._asked_at = -1.0            # smart-turn consulted once per pause
+        self._vetoed = False             # ...and it said the speaker is not done
 
     @property
     def in_speech(self) -> bool:
@@ -114,10 +137,24 @@ class TurnDetector:
             self._turn.append(window)
             if speech:
                 self._silence = 0
+                self._asked_at = -1.0
+                self._vetoed = False
                 self._speech_windows += 1
             else:
                 self._silence += 1
-                if self._silence >= self.stop_windows:
+                pause = self._silence * WINDOW / RATE
+                early = False
+                done = self._silence >= self.stop_windows
+                if done and self._smart is not None and self._asked_at < 0:
+                    # Ask once per pause. Re-asking every window would turn a modest
+                    # per-check error rate into a near-certainty over a long pause.
+                    self._asked_at = pause
+                    audio = b"".join(self._turn[:-self._silence])
+                    if self._smart.probability(audio) < self.endpoint_confidence:
+                        self._vetoed = True
+                if self._vetoed and self._silence < self.max_wait_windows:
+                    done = False
+                if done:
                     # Drop the trailing silence that ended the turn; keep the rest.
                     audio = b"".join(self._turn[:-self._silence])
                     long_enough = self._speech_windows >= self.min_speech_windows
