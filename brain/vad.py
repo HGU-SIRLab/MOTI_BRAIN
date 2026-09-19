@@ -46,7 +46,8 @@ class TurnDetector:
 
     def __init__(self, threshold: float = 0.5, stop_secs: float = 1.5,
                  pad_secs: float = 0.3, min_speech_secs: float = 0.3,
-                 endpoint_confidence: float = 0.7, max_wait: float = 4.0):
+                 endpoint_confidence: float = 0.7, max_wait: float = 4.0,
+                 fast_after: float = 0.6, fast_confidence: float = 0.95):
         self.session = ort.InferenceSession(str(MODEL), providers=["CPUExecutionProvider"])
         self.threshold = threshold
         # When the timer expires, smart-turn gets a veto: below `endpoint_confidence` the
@@ -54,6 +55,24 @@ class TurnDetector:
         # cap matters — a wrong veto must not hang the conversation.
         self.endpoint_confidence = endpoint_confidence
         self.max_wait_windows = max(1, int(max_wait * RATE / WINDOW))
+        # Fast path (§9.1e). Real-time conversation is the goal and waiting out the timer
+        # on every turn is not it, so smart-turn gets one early question and may release
+        # the turn at 0.6s.
+        #
+        # 0.95 is a deliberate trade, not a tuned optimum: end-of-turn wait drops
+        # 1.22s -> 0.77s, at the cost of splitting `c2_suppressed` — the emotionally
+        # suppressed take, which is precisely the user §9.1a says must not be cut off.
+        # A wrong fire is recovered by barge-in in 70ms (§13.3), so it is brief rather
+        # than harmless. **Set this to 0.99 to effectively disable the fast path** and get
+        # back the safe-but-slower behaviour; that is the one-line revert.
+        self.fast_windows = max(1, int(fast_after * RATE / WINDOW))
+        self.fast_confidence = fast_confidence
+        # How much trailing silence to show smart-turn. It matters a lot and in both
+        # directions: strip it entirely and the model has no pause to judge; hand it the
+        # full accumulated silence and everything reads as "finished" (the veto fired on
+        # 1 of 22 pauses with 0.3s, 6 of 22 with the lot). The reference calls the model
+        # right as VAD detects silence, i.e. with a short fixed tail.
+        self.pause_windows = max(1, int(0.3 * RATE / WINDOW))
         self._smart = None
         try:
             from brain.smart_turn import SmartTurn
@@ -75,7 +94,8 @@ class TurnDetector:
         self._silence = 0
         self._speech_windows = 0
         self._run = 0                    # consecutive speech windows right now
-        self._asked_at = -1.0            # smart-turn consulted once per pause
+        self._asked_at = -1.0            # smart-turn consulted once per pause (veto)
+        self._asked_fast = False         # ...and once early (fast path)
         self._vetoed = False             # ...and it said the speaker is not done
 
     @property
@@ -138,6 +158,7 @@ class TurnDetector:
             if speech:
                 self._silence = 0
                 self._asked_at = -1.0
+                self._asked_fast = False
                 self._vetoed = False
                 self._speech_windows += 1
             else:
@@ -145,12 +166,20 @@ class TurnDetector:
                 pause = self._silence * WINDOW / RATE
                 early = False
                 done = self._silence >= self.stop_windows
+
+                # Fast path: one question, early in the pause.
+                if (not done and self._smart is not None and not self._asked_fast
+                        and self._silence >= self.fast_windows
+                        and self._speech_windows >= self.min_speech_windows):
+                    self._asked_fast = True
+                    if self._smart.probability(self._with_pause()) >= self.fast_confidence:
+                        done = True
+
                 if done and self._smart is not None and self._asked_at < 0:
                     # Ask once per pause. Re-asking every window would turn a modest
                     # per-check error rate into a near-certainty over a long pause.
                     self._asked_at = pause
-                    audio = b"".join(self._turn[:-self._silence])
-                    if self._smart.probability(audio) < self.endpoint_confidence:
+                    if self._smart.probability(self._with_pause()) < self.endpoint_confidence:
                         self._vetoed = True
                 if self._vetoed and self._silence < self.max_wait_windows:
                     done = False
@@ -165,6 +194,12 @@ class TurnDetector:
                     if long_enough:
                         turns.append(audio)
         return turns
+
+    def _with_pause(self) -> bytes:
+        """Turn audio plus a fixed short tail of silence — the shape smart-turn expects."""
+        keep = min(self._silence, self.pause_windows)
+        drop = self._silence - keep
+        return b"".join(self._turn[:len(self._turn) - drop])
 
     def provisional(self) -> bytes | None:
         """The turn as it stands mid-pause, for speculative generation.

@@ -549,6 +549,44 @@ answering a question the user did not finish asking.
 
 Per-session switch `speculate` in `hello`, alongside `backchannel`.
 
+### 9.1e ✅ `[MEASURED]` Fast path — real-time is the goal, so stop waiting out the timer
+
+§9.1c left every turn waiting ~1.2s to be sure, which is polite and not real-time. §4.2's
+argument applies directly: interruption reaction in a cascade is already fast (ours is 70ms,
+§13.3), so **being wrong is cheap and being slow on every turn is not.**
+
+smart-turn is therefore asked **twice** per pause, for opposite purposes:
+
+| | when | threshold | effect |
+|---|---|---|---|
+| fast path | 0.6s into the pause | ≥ 0.95 → end now | most turns answer at ~0.77s |
+| veto | when the 1.5s timer expires | < 0.7 → keep waiting, to 4.0s max | protects the pauses it is unsure about |
+
+Measured over the six spontaneous recordings (~3 minutes):
+
+| configuration | wrong splits | wait at a real ending |
+|---|---|---|
+| timer 1.5s (original) | **19** | 0.80s |
+| veto only | 2 | 1.22s |
+| **veto + fast path @0.95** | **3** | **0.77s** |
+
+Same speed as the original timer with **six times fewer interruptions**, and with speculative
+generation (§9.1d) the reply is already synthesized, so perceived latency is roughly that 0.77s.
+
+**How much trailing silence smart-turn sees turned out to matter as much as the threshold.**
+Strip it and the model has no pause to judge; hand it the whole accumulated silence and
+everything reads as finished (the veto fired on 1 of 22 pauses with a 0.3s tail, 6 of 22 with
+the lot). It is now given a fixed 0.3s tail, matching how the reference calls it.
+
+**The cost, stated plainly**: at 0.95 the fast path splits `c2_suppressed` — the emotionally
+suppressed take, which §9.1a identified as exactly the user who must not be cut off. Barge-in
+recovers in 70ms, so it is brief rather than harmless. **`fast_confidence = 0.99` disables the
+fast path** and returns to 1.22s with `c2_suppressed` intact; that is the one-line revert if
+live use shows the interruptions matter more than the 0.45s.
+
+`brain/test_vad.py` now asserts a **split budget** (4) rather than perfection, so a regression
+toward the 19-split behaviour fails loudly while the accepted trade passes.
+
 ### 9.2 Barge-in
 `[OFFICIAL]` Silero VAD + smart-turn-v3 together give accurate, low-latency turn start/stop signals. v5 relied on Pipecat to turn those signals into interruption logic that yields to a real interruption without reacting to brief mid-sentence pauses — **we now implement that logic ourselves** (§11.0 items 1 and 4).
 
