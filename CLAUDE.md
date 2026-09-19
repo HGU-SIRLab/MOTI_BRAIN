@@ -1028,19 +1028,24 @@ Two notes on reading the numbers:
 
 | Feature `[OFFICIAL]` | Status | Path |
 |---|---|---|
-| Barge-in | ✅ Achievable | Silero + smart-turn, **on the brain** (§4, §9.2). Pipecat removed (§0-A row 2) |
-| Interruption cancel/discard | ✅ Achievable | Mirror Gemini's contract |
+| Barge-in | ✅ **Implemented**, 0.07s | Silero VAD on the brain (§9.1a). smart-turn is **not** in this path — it failed validation. Measured against the fake robot only; a real mic adds the AEC question (§18). |
+| Interruption cancel/discard | ✅ **Implemented** | Cancels LLM generation and TTS together; robot drops its buffer (§11.0-1/-4). |
 | Audio transcription (both sides) | ✅ **Verified** | v5 credited the cascade's STT for this; EXP-13 deleted that leg, so the brain must ask E4B for the user transcript explicitly (§12.6). Measured word-for-word exact on Korean. |
-| High-quality natural speech | ✅ Achievable | §8 candidates |
+| High-quality natural speech | ⚠️ **Adequate, not chosen** | Piper `ko_KR-kss-medium` is the *only* Korean voice that exists for Piper (§8.3). It works; it was not selected on quality. |
 | Affective dialog | ✅ **Verified** | In-band: E4B hears prosody itself (§12.4). No parallel SER. |
 | Emotional speech output | ⚠️ **At risk** | Piper's only Korean voice has no emotion control and no voice choice (§8.2). CosyVoice 2 instruct would restore it but has no Jetson precedent. |
-| Proactive audio | ✅ Achievable | `<SILENT>` gate (§9.3) |
+| Proactive audio | ✅ **Implemented**, 6/6 on text | v5's wording scored 4/6 and had to be rewritten (§9.3a). Untested on audio — no self-talk recordings yet. |
 | Function calling | ✅ **Verified** | Tested on this server: 3 correct calls with correct args, and it still fires with audio input (§12.6). |
 | Async function calling | ⚠️ Custom work | Not free; low priority for Moti |
 | Background reasoning | ❌ Deliberately excluded | Thinking mode kills latency (§5.4) |
 | 24 languages | ❌ Korean-only | Irrelevant for Moti |
-| Natural conversational rhythm | ⚠️ Partial | Backchanneling / micro-turn (§4.2, EXP-12) closes part of the *felt* gap |
-| Sub-500ms latency | ⚠️ **Not achievable** | Irreducible gap. `[OFFICIAL]` For reference, NVIDIA's own open E2E model reports ~448ms turn-taking — and it needs an H100-class GPU |
+| Natural conversational rhythm | ❌ **Not started** | Backchanneling (EXP-12) not built. Currently 1.5s of dead silence before every reply while the VAD waits (§13.4). |
+| Sub-500ms latency | ❌ **1.98s measured** | §13.4. But 76% of it is the `stop_secs` wait, not compute — the cascade itself costs 0.48s. Fixing Q19 would put perceived latency near 0.65s. The gap is turn detection, not the hardware. |
+
+**Status as of 2026-09-19**: 7 of 13 rows verified or implemented, 1 adequate, 2 deliberately out of
+scope, 3 not built (emotional speech output, backchanneling, sub-500ms). Everything measured so far ran
+against a fake robot — **nothing has touched real hardware**, so AEC, mic quality and playback timing are
+all still unknowns (§18).
 
 **Honest position**: every functional gap has a closing path. **Latency is the one irreducible difference.** In exchange Moti gets zero marginal cost, unlimited use, full privacy, a fixed persona, long-term memory, and robot-body integration — none of which the API offers.
 
