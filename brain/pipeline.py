@@ -34,7 +34,12 @@ VOICE_PATH = Path(__file__).resolve().parent.parent / "tts_eval" / "ko_KR-kss-me
 # ".?!" alone leaves whole paragraphs intact, because Korean often runs clauses together
 # without them. Endings are matched only when followed by space or end-of-text so that
 # "그래요?" or a mid-word 다 does not split.
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|(?<=[다까요죠])(?=\s)")
+# The third alternative matters: the model routinely omits the space after a period
+# ("마음이 아프네요.푹 쉬시면서"). Without it nothing splits at all, the whole reply becomes
+# one TTS chunk, and §11.0-2's whole point — first audio before the reply finishes — is lost.
+# Digits are excluded so "3.5초" stays intact.
+_SENTENCE_END = re.compile(
+    r"(?<=[.!?])\s+|(?<=[다까요죠])(?=\s)|(?<=[.!?])(?=[^\s\d])")
 
 
 def split_sentences(text: str) -> list[str]:

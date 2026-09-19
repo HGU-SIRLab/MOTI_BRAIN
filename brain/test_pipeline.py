@@ -47,6 +47,12 @@ def test_take_sentences() -> None:
     out.append(buf.strip())
     joined = " ".join(out)
     assert "정도로 지치셨다니" in joined, joined
+
+    # The model often omits the space after a period. Before this was handled nothing
+    # split at all and the whole reply went to TTS as one chunk.
+    done, rest = take_sentences("마음이 아프네요.푹 쉬세요.")
+    assert done == ["마음이 아프네요."] and rest == "푹 쉬세요.", (done, rest)
+    assert take_sentences("3.5초 걸려요.")[0] == [], "숫자를 문장 경계로 오인"
     assert joined.count("푹 쉬세요") == 1, joined      # and no duplication
     print("take_sentences OK")
 
