@@ -453,6 +453,37 @@ Stopped deliberately rather than guessing further: without a reference implement
 against, the search is unbounded, and a turn detector that is subtly wrong is worse than none.
 Tracked as Q19.
 
+### 9.1b `[MEASURED]` smart-turn — preprocessing solved, validation is not (2026-09-19)
+
+Revisited because EXP-8 showed this is the only lever that matters (§13.4). Diffing against
+the reference (`pipecat-ai/smart-turn`, `inference.py`) found two real bugs:
+
+1. **Missing `do_normalize`** — Whisper's extractor normalizes the *waveform* to zero mean and
+   unit variance before the mel. Without it the features sit on a scale the model never saw.
+2. **A sigmoid on an output that is already a probability**, despite the ONNX tensor being
+   named `logits`. This is what produced the earlier "no opinion" readings: everything landed
+   in 0.50–0.73, which is exactly sigmoid(0)–sigmoid(1). The model had been answering 0.0 and
+   1.0 all along, and the earlier conclusion that "silence scores higher than speech, so the
+   mel is wrong" was drawn from doubly-squashed numbers.
+
+After the fixes, `log_mel()` matches `WhisperFeatureExtractor(chunk_length=8, do_normalize=True)`
+**exactly** — max absolute error 0.0000 over all 80×800 values, mel filterbank identical.
+Front-padding was already correct (their `truncate_audio_to_last_n_seconds` pads at the start).
+
+**It is still not wired in.** On our five recordings it separates finished from mid-word speech
+only 2/5, and inverted on a1_tired (complete 0.062, mid-word 0.235). Published accuracy on
+Korean is **96.96%, the best of 23 languages**, so the model is not the problem and neither is
+the preprocessing. The remaining suspect is the test material: the recordings are scripted lines
+read aloud by one speaker, while smart-turn is trained on spontaneous conversational audio
+(`human_convcollector`, etc.). Read speech does not carry the same turn-final prosody.
+
+Enabling it on these numbers would be reckless in a specific way: the failures point the
+dangerous direction. A mid-word cut scored 0.893 — acting on that cuts a user off mid-sentence,
+which is the exact failure §9.1a's 1.5s exists to prevent.
+
+**Unblocked by data, not code**: a handful of spontaneous conversational recordings — someone
+talking naturally, including pauses that are *not* turn ends. Q19b.
+
 ### 9.2 Barge-in
 `[OFFICIAL]` Silero VAD + smart-turn-v3 together give accurate, low-latency turn start/stop signals. v5 relied on Pipecat to turn those signals into interruption logic that yields to a real interruption without reacting to brief mid-sentence pauses — **we now implement that logic ourselves** (§11.0 items 1 and 4).
 
@@ -1187,7 +1218,8 @@ starting the next; do not run parallel blockers just to save days we do not need
 | ~~Q13b~~ | ~~Does multi-clip segmentation clear the 30s ceiling?~~ | ✅ **Resolved: yes — 20s × 2 = 1,004 tokens, no truncation (§12.3)** |
 | ~~Q13c~~ | ~~Comprehension and tone?~~ | ✅ **Resolved: matched a perfect transcript, and tone changed the reply (§12.4)** |
 | **Q18** | How often does prosody make the model fabricate situations, and can the persona suppress it? | Live use; §12.4 caveat |
-| **Q19 ★** | Can smart-turn-v3's Whisper mel be reproduced correctly (numpy, no torch)? **EXP-8 shows this is the single biggest latency lever — 76% of perceived delay is the `stop_secs` wait it would remove (§13.4).** | Needs a reference implementation to diff against |
+| ~~Q19a~~ | ~~Can smart-turn's Whisper mel be reproduced in numpy?~~ | ✅ **Yes — proven identical to `WhisperFeatureExtractor`, max error 0.0000 (§9.1b)** |
+| **Q19b ★** | Does smart-turn actually work on our Korean audio? 2/5 on scripted reads vs 96.96% published. **Still the single biggest latency lever — 76% of perceived delay (§13.4).** | Needs spontaneous conversational recordings, not scripted ones |
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | ~~Q14~~ | ~~Reproduce the young voice, or drop the pitch shift?~~ | ✅ **Resolved 2026-09-19: Piper's voice as-is, no pitch shift. `ENABLE_VOICE_SHIFT=false` (§8.3)** |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |

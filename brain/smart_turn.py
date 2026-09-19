@@ -1,14 +1,25 @@
-"""smart-turn-v3 — ⚠️ NOT WORKING, NOT WIRED IN. Kept for the evidence, not for use.
+"""smart-turn-v3 — preprocessing now PROVEN CORRECT, but still NOT WIRED IN.
 
-The mel below is wrong. Measured: pure silence scores 0.726 and white noise 0.727,
-while a genuinely finished Korean question scores 0.690 — the model rates noise as
-more "finished" than speech, so it is not receiving what it was trained on. Values
-also pin at ~0.504 (logit 0) for most clips, i.e. no opinion.
+Status (2026-09-19). Two real bugs were found and fixed by diffing against the reference
+(pipecat-ai/smart-turn `inference.py`):
+  1. missing `do_normalize` — zero-mean/unit-variance on the waveform before the mel
+  2. a sigmoid applied to an output that is *already* a probability despite being named
+     `logits`. That squashed everything into 0.50–0.73 = sigmoid(0)–sigmoid(1); the model
+     had been answering 0.0 and 1.0 the whole time.
 
-Do not wire this in until `test_smart_turn.py` passes, which requires speech to
-separate from silence and noise. Likely suspects: where short audio is padded
-(front vs back), frame alignment, and whether normalization should span the full
-Whisper 30s window rather than the 8s slice.
+`log_mel()` now matches `WhisperFeatureExtractor(chunk_length=8, do_normalize=True)`
+**exactly** — max absolute error 0.0000 across all 80x800 values, filterbank identical.
+So the features are right and the earlier "the mel is wrong" conclusion was itself wrong.
+
+Why it is still not wired in: on our five recordings it separates finished from mid-word
+speech only 2/5, and in the wrong direction on a1_tired. Published accuracy on Korean is
+96.96% (best of 23 languages), so the fault is most likely the test material — these are
+scripted lines read aloud by one speaker, and the model is trained on natural
+conversational audio. Validating it needs spontaneous conversational recordings.
+
+**Do not enable on these numbers.** The dangerous direction is present: a mid-word cut
+scored 0.893 on a1_tired, and acting on that would cut a user off mid-sentence. Worth
+~1.3s of every turn (§13.4), so this is the top open item — but it needs data, not code.
 
 Original intent below. ------------------------------------------------------------
 
@@ -38,7 +49,7 @@ N_FFT = 400
 HOP = 160
 N_MELS = 80
 FRAMES = 800                     # model input width = 8s
-MODEL = Path(__file__).resolve().parent.parent / "models" / "smart_turn_v3.onnx"
+MODEL = Path(__file__).resolve().parent.parent / "models" / "smart_turn_v32.onnx"
 
 
 def _hz_to_mel(hz: np.ndarray) -> np.ndarray:
@@ -85,9 +96,17 @@ _WINDOW = np.hanning(N_FFT + 1)[:-1].astype(np.float32)  # periodic, matches tor
 
 
 def log_mel(audio: np.ndarray) -> np.ndarray:
-    """float32 mono @16kHz -> (80, FRAMES), Whisper normalization."""
-    need = (FRAMES + 1) * HOP
+    """float32 mono @16kHz -> (80, FRAMES), Whisper features.
+
+    Mirrors the reference (pipecat-ai/smart-turn `inference.py`): keep the last 8s,
+    left-pad if shorter, then `WhisperFeatureExtractor(..., do_normalize=True)`.
+    """
+    need = 8 * RATE
     audio = audio[-need:] if len(audio) >= need else np.pad(audio, (need - len(audio), 0))
+
+    # do_normalize: zero mean, unit variance on the *waveform*. Omitting this was the
+    # first of the two bugs — the mel came out on a scale the model never saw.
+    audio = (audio - audio.mean()) / np.sqrt(audio.var() + 1e-7)
 
     padded = np.pad(audio, N_FFT // 2, mode="reflect")
     n_frames = 1 + (len(padded) - N_FFT) // HOP
@@ -110,10 +129,16 @@ class SmartTurn:
         self.threshold = threshold
 
     def probability(self, pcm: bytes) -> float:
-        """P(the speaker finished) for the trailing audio of a turn."""
+        """P(the speaker finished) for the trailing audio of a turn.
+
+        The ONNX output is **already a probability** despite being named `logits`; the
+        reference reads it straight. Applying a sigmoid on top was the second bug and it
+        squashed everything into 0.50–0.73, which is exactly sigmoid(0)–sigmoid(1) — the
+        model had been answering 0.0 and 1.0 all along.
+        """
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
-        logits = self.session.run(None, {"input_features": log_mel(audio)[None, ...]})[0]
-        return float(1.0 / (1.0 + np.exp(-logits[0][0])))
+        out = self.session.run(None, {"input_features": log_mel(audio)[None, ...]})[0]
+        return float(out[0][0])
 
     def is_complete(self, pcm: bytes) -> bool:
         return self.probability(pcm) >= self.threshold
