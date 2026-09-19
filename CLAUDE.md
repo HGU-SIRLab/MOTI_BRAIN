@@ -1269,6 +1269,32 @@ Remaining levers on the ~1s first-sentence decode, in rough order of appeal:
 - a q4 QAT checkpoint (§5.4 rule 6) — decode is memory-bandwidth bound, so this should help;
   costs a download and one 33-minute restart
 
+### 13.7 🔴 `[MEASURED]` Two ways a failed turn became an infinite hang (2026-09-19)
+
+Found while re-running EXP-8, which sat for 27 minutes producing nothing. Both causes are worth
+keeping because neither announces itself.
+
+**The vLLM side.** The engine died mid-run with
+`AssertionError: Expected a cached item for mm_hash=...` and returned HTTP 500. The trigger is our own
+design: §12.6 has the reply call and the transcription call carry the **same audio**, deliberately, so
+they share a prefix-cache entry. §13.2 then made them run **concurrently**. Two in-flight requests with
+an identical `mm_hash` race in vLLM's multimodal processor cache. Fixed with
+`--mm-processor-cache-gb 0`, which costs re-deriving audio features twice per turn — cheap, and
+unrelated to prefix caching, which is what the shared-prefix optimization actually relies on.
+
+Note the shape of this: the two optimizations are individually correct and interact badly. Serializing
+the calls would also fix it and was rejected — that is the change §13.2 measured at 2.7× on first audio.
+
+**The client side, and this one is worse.** `client/local_live.py` handled `{"t":"error"}` with
+`continue`. The brain reported the failure correctly; the shim swallowed it and waited for a
+`turn_complete` that was never coming. **`launcher.py` would hang identically** — its `recv_loop` also
+exits only on `turn_complete`, so on the real robot this is a wedged conversation with no error
+anywhere, requiring a restart. An error now sets `turn_complete` and is recorded in `last_error`.
+
+The general rule, since §11.5 lists `{"t":"error"}` as having *"no Gemini counterpart"*: **every brain
+message that can end a turn must end the turn.** A protocol addition that the client merely logs is a
+hang waiting for the first backend failure.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
@@ -1277,24 +1303,29 @@ Remaining levers on the ~1s first-sentence decode, in rough order of appeal:
 
 | Feature `[OFFICIAL]` | Status | Path |
 |---|---|---|
-| Barge-in | ✅ **Implemented**, 0.07s | Silero VAD on the brain (§9.1a). smart-turn is **not** in this path — it failed validation. Measured against the fake robot only; a real mic adds the AEC question (§18). |
+| Barge-in | ✅ **Implemented**, 0.07s | Silero VAD on the brain (§9.1a). 🔄 *Corrected 2026-09-19*: this row used to read "smart-turn is not in this path — it failed validation", written while Q19b was open. §9.1c/§9.1e resolved it and smart-turn **is** wired in, twice per pause (fast path + veto). Measured against the fake robot only; a real mic adds the AEC question (§18). |
 | Interruption cancel/discard | ✅ **Implemented** | Cancels LLM generation and TTS together; robot drops its buffer (§11.0-1/-4). |
 | Audio transcription (both sides) | ✅ **Verified** | v5 credited the cascade's STT for this; EXP-13 deleted that leg, so the brain must ask E4B for the user transcript explicitly (§12.6). Measured word-for-word exact on Korean. |
 | High-quality natural speech | ⚠️ **Adequate, not chosen** | Piper `ko_KR-kss-medium` is the *only* Korean voice that exists for Piper (§8.3). It works; it was not selected on quality. |
 | Affective dialog | ✅ **Verified** | In-band: E4B hears prosody itself (§12.4). No parallel SER. |
 | Emotional speech output | ⚠️ **At risk** | Piper's only Korean voice has no emotion control and no voice choice (§8.2). CosyVoice 2 instruct would restore it but has no Jetson precedent. |
 | Proactive audio | ✅ **Implemented**, 6/6 on text | v5's wording scored 4/6 and had to be rewritten (§9.3a). Untested on audio — no self-talk recordings yet. |
-| Function calling | ✅ **Verified** | Tested on this server: 3 correct calls with correct args, and it still fires with audio input (§12.6). |
+| Function calling | ✅ **Verified end to end** | 3 correct calls with correct args against the server, and it still fires with audio input (§12.6). Since then the **full round trip** is verified over the wire: `tool_call` → robot executes → `tool_result` → follow-up reply, with `args` as a dict per §11.5. |
 | Async function calling | ⚠️ Custom work | Not free; low priority for Moti |
 | Background reasoning | ❌ Deliberately excluded | Thinking mode kills latency (§5.4) |
 | 24 languages | ❌ Korean-only | Irrelevant for Moti |
-| Natural conversational rhythm | ❌ **Not started** | Backchanneling (EXP-12) not built. Currently 1.5s of dead silence before every reply while the VAD waits (§13.4). |
-| Sub-500ms latency | ❌ **1.98s measured** | §13.4. But 76% of it is the `stop_secs` wait, not compute — the cascade itself costs 0.48s. Fixing Q19 would put perceived latency near 0.65s. The gap is turn detection, not the hardware. |
+| Natural conversational rhythm | ⚠️ **Built, marginal** | 🔄 *Corrected 2026-09-19*: read "Not started / backchanneling not built". Backchanneling **is** built (§12.7) — but its safe trigger is 1.4s while the reply now lands at ~2.0s, so it covers 0.6s of the silence, not the 1.4s the idea promised. The "1.5s of dead silence" this row used to cite is also gone: the fast path closes most turns at ~0.6s (§9.1e). |
+| Sub-500ms latency | ❌ **2.02s measured** | 🔄 *Corrected 2026-09-19*: this row cited §13.4's 1.98s and predicted ~0.65s once Q19 was fixed. Q19b **was** fixed and that prediction was wrong — §9.1c retracts it explicitly. Current figure is §13.5's 2.02s on natural turns (p95 2.82s). **The bottleneck moved**: turn detection is down to ~0.6s, and what dominates now is decoding the first sentence at 13 tok/s. The remaining lever is q4 quantization (§13.6), not turn detection. |
 
-**Status as of 2026-09-19**: 7 of 13 rows verified or implemented, 1 adequate, 2 deliberately out of
-scope, 3 not built (emotional speech output, backchanneling, sub-500ms). Everything measured so far ran
-against a fake robot — **nothing has touched real hardware**, so AEC, mic quality and playback timing are
-all still unknowns (§18).
+**Status as of 2026-09-19**: of 13 rows — **6 verified or implemented**, 4 partial (voice quality,
+emotional speech output, async function calling, conversational rhythm), 2 deliberately out of scope,
+and **1 genuine miss: sub-500ms latency**. Everything measured so far ran against a fake robot —
+**nothing has touched real hardware**, so AEC, mic quality and playback timing are all still unknowns (§18).
+
+⚠️ **This table is a status claim, not a log.** Three of its rows silently went stale between
+2026-09-19 morning and evening because Q19b's resolution invalidated the premises they were written on —
+the same failure pattern §0-A and the troubleshooting notes record twice already. **Re-read this table
+whenever a §9/§13 measurement lands**, not only when a feature is added.
 
 **Honest position**: every functional gap has a closing path. **Latency is the one irreducible difference.** In exchange Moti gets zero marginal cost, unlimited use, full privacy, a fixed persona, long-term memory, and robot-body integration — none of which the API offers.
 
@@ -1377,13 +1408,17 @@ starting the next; do not run parallel blockers just to save days we do not need
       optional quality upgrade rather than a risk item. Revisit if the voice disappoints in live use,
       or if emotional speech output (§14) turns out to matter.
 
-**Stage 4 — the pipeline and the wire** (§11)
-- [ ] VAD + smart-turn-v3 on the brain, with the §11.0-3 compensation buffer
-- [ ] Brain server: wire protocol per §11.5, conversation state held server-side
-- [ ] Robot-side client shim; `launcher.py` diff must be the `connect()` call only (§20 rule 17)
-- [ ] Instrument every stage from the first commit (§20 rule 5)
-- [ ] Fake-robot client for round-trip testing without the robot; then the real robot on the same LAN
-- [ ] The four `[MANDATORY]` items in §11.0 — treat as acceptance criteria, not TODOs
+**Stage 4 — the pipeline and the wire** (§11) — **everything but the real robot is done**
+- [x] VAD + smart-turn-v3 on the brain, with the §11.0-3 compensation buffer (§9.1a–e)
+- [x] Brain server: wire protocol per §11.5, conversation state held server-side, resumed across
+      reconnects (`client/test_reconnect.py`)
+- [x] Robot-side client shim; the `launcher.py` diff **is** the `connect()` call only (§20 rule 17).
+      Procedure for the robot side: `docs/robot_integration.md`
+- [x] Instrument every stage from the first commit (§20 rule 5) — §13.2–13.5
+- [x] Fake-robot client for round-trip testing (`brain/fake_robot.py`)
+- [x] The four `[MANDATORY]` items in §11.0, plus item 5 (≤30s clip splitting)
+- [ ] **The real robot on the same LAN** — the only Stage 4 item left, and it is the one that
+      decides whether any of the above survives contact with a microphone (§14 status note)
 
 **Stage 5 — behavior and measurement**
 - [ ] Barge-in + playback buffer flush → EXP-9 (**on the robot**, not the AGX — §12 note)
@@ -1437,7 +1472,8 @@ starting the next; do not run parallel blockers just to save days we do not need
 | ~~Q13c~~ | ~~Comprehension and tone?~~ | ✅ **Resolved: matched a perfect transcript, and tone changed the reply (§12.4)** |
 | **Q18** | How often does prosody make the model fabricate situations, and can the persona suppress it? | Live use; §12.4 caveat |
 | ~~Q19a~~ | ~~Can smart-turn's Whisper mel be reproduced in numpy?~~ | ✅ **Yes — proven identical to `WhisperFeatureExtractor`, max error 0.0000 (§9.1b)** |
-| **Q19b ★** | Does smart-turn actually work on our Korean audio? 2/5 on scripted reads vs 96.96% published. **Still the single biggest latency lever — 76% of perceived delay (§13.4).** | Needs spontaneous conversational recordings, not scripted ones |
+| ~~Q19b~~ | ~~Does smart-turn actually work on our Korean audio?~~ | ✅ **Resolved 2026-09-19 (§9.1c): yes — median 0.019 "still going" vs 0.880 "finished" on spontaneous audio. The 2/5 was the test material, not the model.** Two corrections came with it: the useful wiring is a **veto**, not an early end (the obvious direction measured *worse* than no smart-turn), and the "this takes 1.98s → 0.65s" projection was **wrong** — see §9.1c. |
+| **Q20** | Where did 2.02s actually go, now that turn detection is only ~0.6s of it? Decode of the first sentence at 13 tok/s is the stated cause (§13.5) but has not been isolated end to end. | q4 W4A16 checkpoint + one vLLM restart (§13.6) |
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | ~~Q14~~ | ~~Reproduce the young voice, or drop the pitch shift?~~ | ✅ **Resolved 2026-09-19: Piper's voice as-is, no pitch shift. `ENABLE_VOICE_SHIFT=false` (§8.3)** |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
