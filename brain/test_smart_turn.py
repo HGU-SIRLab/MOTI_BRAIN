@@ -1,9 +1,13 @@
-"""Gate for smart-turn. Currently FAILS by design — the mel is wrong (see smart_turn.py).
+"""Gate for smart-turn, which is now wired in (§9.1e) and load-bearing.
 
-The first version of this test only compared a full clip against a truncated one and
-passed on differences of 0.001. That was too weak to notice the model had no opinion.
-The discriminating check is against extremes: if silence and white noise score at or
-above genuinely finished speech, the preprocessing is not producing Whisper features.
+The previous version of this file asserted that speech must score higher than silence.
+That premise was wrong — 8s of silence *is* a finished turn, and the assertion outlived
+its usefulness by failing for the wrong reason. What matters now is the discrimination
+the endpointing actually depends on: a pause the speaker talks through must score low,
+and the end of an utterance must score high.
+
+Labels come free from the spontaneous recordings: every internal pause is ground truth
+"still going" (they continued), the end of each file is "finished".
 
 Run: PYTHONPATH= .venv_tts/bin/python brain/test_smart_turn.py
 """
@@ -12,11 +16,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import onnxruntime as ort
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from brain.smart_turn import FRAMES, N_MELS, SmartTurn, log_mel  # noqa: E402
+from brain.vad import CONTEXT, RATE, WINDOW  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
+CLIPS = ["s1_recall", "s2_project", "s3_weekend", "s4_undecided", "s5_explain",
+         "s6_explain"]
+PAUSE = b"\x00" * (int(0.3 * RATE) * 2)     # the tail the model is given (§9.1e)
 
 
 def pcm16k(stem: str) -> bytes:
@@ -27,25 +36,60 @@ def pcm16k(stem: str) -> bytes:
         check=True, capture_output=True).stdout
 
 
-def main() -> None:
-    st = SmartTurn()
-    speech = [st.probability(pcm16k(s))
-              for s in ("a1_tired", "a2_happy", "a3_anxious", "c1_neutral")]
-    silence = st.probability(np.zeros(16000 * 4, dtype=np.int16).tobytes())
-    noise = st.probability((np.random.randn(16000 * 4) * 3000).astype(np.int16).tobytes())
+def speech_mask(pcm: bytes) -> np.ndarray:
+    vad = ort.InferenceSession(str(ROOT / "models" / "silero_vad.onnx"),
+                               providers=["CPUExecutionProvider"])
+    x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+    state = np.zeros((2, 1, 128), dtype=np.float32)
+    ctx = np.zeros(CONTEXT, dtype=np.float32)
+    out = []
+    for i in range(0, len(x) - WINDOW, WINDOW):
+        chunk = x[i:i + WINDOW]
+        p, state = vad.run(None, {"input": np.concatenate([ctx, chunk])[None, :],
+                                  "state": state,
+                                  "sr": np.array(RATE, dtype=np.int64)})
+        out.append(float(p[0][0]) >= 0.5)
+        ctx = chunk[-CONTEXT:]
+    return np.array(out)
 
-    m = log_mel(np.frombuffer(pcm16k("a1_tired"), dtype=np.int16).astype(np.float32) / 32768.0)
+
+def main() -> None:
+    m = log_mel(np.zeros(8 * RATE, dtype=np.float32))
     assert m.shape == (N_MELS, FRAMES), m.shape
 
-    print(f"완결 발화 P(끝남): {[round(p, 3) for p in speech]}  (최저 {min(speech):.3f})")
-    print(f"무음 {silence:.3f}   백색소음 {noise:.3f}")
+    st = SmartTurn()
+    going, ended = [], []
+    for stem in CLIPS:
+        pcm = pcm16k(stem)
+        mask = speech_mask(pcm)
+        run, started = 0, False
+        for i, voiced in enumerate(mask):
+            if voiced:
+                if started and run * WINDOW / RATE >= 1.0:
+                    cut = (i - run) * WINDOW * 2
+                    going.append(st.probability(pcm[:cut] + PAUSE))
+                started, run = True, 0
+            elif started:
+                run += 1
+        last = np.where(mask)[0][-1]
+        ended.append(st.probability(pcm[:(last + 1) * WINDOW * 2] + PAUSE))
 
-    # Speech that clearly ended must beat structureless audio. It does not, today.
-    if min(speech) <= max(silence, noise):
-        print("\n실패: 무음/소음이 완결 발화 이상으로 채점됨 → mel 전처리가 틀렸다.")
-        print("smart-turn을 파이프라인에 연결하지 말 것. vad.py의 stop_secs 폴백 사용 중.")
+    going, ended = np.array(going), np.array(ended)
+    print(f"계속 중 (내부 침묵) {len(going):2d}개: 중앙 {np.median(going):.3f}")
+    print(f"끝남   (발화 종료) {len(ended):2d}개: 중앙 {np.median(ended):.3f}")
+
+    # The fast path releases a turn at >=0.95; the veto holds it below 0.7 (§9.1e).
+    fast = (ended >= 0.95).sum()
+    premature = (going >= 0.95).sum()
+    print(f"빠른경로 0.95: 즉시응답 {fast}/{len(ended)} | 섣부른 {premature}/{len(going)}")
+
+    if np.median(going) >= np.median(ended):
+        print("\n실패: 계속 중인 침묵이 발화 종료만큼 높게 나온다 — 분리가 안 된다.")
         sys.exit(1)
-    print("\n통과")
+    if premature > len(going) * 0.2:
+        print(f"\n실패: 섣부른 응답이 {premature}/{len(going)}로 너무 많다.")
+        sys.exit(1)
+    print("\n통과 — 턴 감지가 의존하는 분리가 유지된다")
 
 
 if __name__ == "__main__":
