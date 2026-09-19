@@ -191,15 +191,40 @@ def audio_parts(pcm: bytes) -> list[dict]:
 
 
 class Tts:
-    """Piper. Loaded once — model load is seconds, per-utterance load would dominate."""
+    """Piper, resampled to what the robot's player actually opens.
+
+    `MOTI-HRI/media/audio_manager.py` hardcodes `OUTPUT_RATE = 24000` and opens the
+    sounddevice stream at it; the AEC reference path is derived from the same figure.
+    Piper's Korean voice is 22,050Hz. Converting here keeps the robot untouched
+    (§20 rule 17) — sending 22,050 and hoping would play everything ~9% fast and low.
+
+    160/147 is exact (gcd(24000, 22050) = 150), so polyphase resampling is clean rather
+    than an approximation, and costs ~3ms per 3s of audio.
+    """
+
+    OUT_RATE = 24000
 
     def __init__(self, voice_path: Path = VOICE_PATH):
         from piper import PiperVoice
         self.voice = PiperVoice.load(str(voice_path))
-        self.rate = self.voice.config.sample_rate
+        self.native_rate = self.voice.config.sample_rate
+        self.rate = self.OUT_RATE
 
     def synth(self, text: str) -> bytes:
-        return b"".join(c.audio_int16_bytes for c in self.voice.synthesize(text))
+        raw = b"".join(c.audio_int16_bytes for c in self.voice.synthesize(text))
+        return self._to_out_rate(raw)
+
+    def _to_out_rate(self, pcm: bytes) -> bytes:
+        if self.native_rate == self.OUT_RATE or not pcm:
+            return pcm
+        import numpy as np
+        from math import gcd
+        from scipy.signal import resample_poly
+        g = gcd(self.OUT_RATE, self.native_rate)
+        x = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        y = resample_poly(x, self.OUT_RATE // g, self.native_rate // g)
+        # resample_poly can overshoot at transients; clip before narrowing to int16.
+        return np.clip(y, -32768, 32767).astype(np.int16).tobytes()
 
 
 @dataclass

@@ -387,8 +387,22 @@ User listened to the voice with and without a +3.5 semitone shift and **chose th
 Consequences: `ENABLE_VOICE_SHIFT=false`, the 700ms buffer disappears (§13), and `pyworld` drops off the
 robot's dependency list.
 
-`[TODO Stage 4]` Piper emits **22,050 Hz**; the robot's playback path was built for Gemini's 24 kHz. Resample
-on the brain before sending, and keep §11.0-1's 100–200ms playback buffer in mind when sizing it.
+✅ **Resampling (was a Stage 4 TODO)**: Piper emits 22,050Hz; `MOTI-HRI/media/audio_manager.py`
+hardcodes `OUTPUT_RATE = 24000` and opens the sounddevice stream at it. The brain converts before
+sending — polyphase 160/147 (exact, since gcd(24000, 22050) = 150), ~3ms per 3s of audio.
+
+**Why not just change the robot's constant?** It is a single well-factored constant, so it *could*
+be changed. Keeping 24000 is better on four counts:
+- **24000 is exactly half of 48000**, the rate most USB audio runs natively, so the OS resample
+  downstream is a trivial 2×; 22050 → 48000 is 320/147. The AEC reference path is likewise an exact
+  2:3 at 24000 → 16000 versus 320/441 at 22050. (Device native rate on their Jieli UAC unit is
+  unverified — this is the general case.)
+- **CosyVoice 2 is natively 24kHz**, so an upgrade later (§8.2) would mean changing it back.
+- **`assets/audio/snore.wav` is 24kHz** and `launcher.py:145` *skips the sleepy sound with a warning*
+  on a rate mismatch — a silent feature loss if the asset is not regenerated.
+- The cost is one upsample that adds no information, on the AGX rather than the weaker Orin Nano.
+
+It also preserves the one-line-change property (§11.5).
 
 **Installation trap**: the official `piper_linux_aarch64` binary (1.2.0) **crashes** on this Korean model —
 `"aɪ" is not a single codepoint`, a mismatch between its bundled espeak-ng and the model's phoneme map.
