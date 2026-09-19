@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모티 뇌 테스트</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --ink: #14171a; --dim: #5b6570;
+    --line: #dfe3e8; --accent: #2b6cb0; --warn: #b7791f; --bad: #c53030;
+    --good: #2f855a; --me: #e8f0fb; --moti: #f0f2f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171a; --panel: #1c2024; --ink: #e8eaed; --dim: #9aa4af;
+      --line: #2c3238; --accent: #74a9e0; --warn: #d69e2e; --bad: #fc8181;
+      --good: #68d391; --me: #1e2c3f; --moti: #24292e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171a; --panel: #1c2024; --ink: #e8eaed; --dim: #9aa4af;
+    --line: #2c3238; --accent: #74a9e0; --warn: #d69e2e; --bad: #fc8181;
+    --good: #68d391; --me: #1e2c3f; --moti: #24292e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  .sub { color: var(--dim); font-size: .875rem; margin: 0 0 20px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  label { font-size: .8125rem; color: var(--dim); }
+  input[type=text], textarea {
+    background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 9px; font: inherit; font-size: .875rem;
+  }
+  input[type=text] { min-width: 210px; }
+  textarea { width: 100%; min-height: 76px; resize: vertical; font-size: .8125rem; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+    padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--accent);
+                 border: 1px solid var(--line); }
+  button:disabled { opacity: .45; cursor: default; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim);
+         display: inline-block; margin-right: 6px; }
+  .dot.on { background: var(--good); }
+  .dot.err { background: var(--bad); }
+  .meter { height: 8px; background: var(--line); border-radius: 4px;
+           overflow: hidden; flex: 1; min-width: 120px; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--good);
+               transition: width .06s linear; }
+  .stats { display: flex; gap: 22px; flex-wrap: wrap; font-size: .875rem; }
+  .stats b { font-size: 1.35rem; font-weight: 700; display: block;
+             font-variant-numeric: tabular-nums; }
+  .stats span { color: var(--dim); font-size: .75rem; }
+  #chat { display: flex; flex-direction: column; gap: 8px;
+          max-height: 46vh; overflow-y: auto; }
+  .msg { padding: 8px 12px; border-radius: 10px; max-width: 86%;
+         white-space: pre-wrap; word-break: break-word; }
+  .msg.me { background: var(--me); align-self: flex-end; }
+  .msg.moti { background: var(--moti); align-self: flex-start; }
+  .msg .who { font-size: .6875rem; color: var(--dim); display: block; }
+  #log { font: 12px/1.55 ui-monospace, "SF Mono", Menlo, monospace;
+         max-height: 30vh; overflow-y: auto; color: var(--dim); }
+  #log .t { color: var(--accent); }
+  #log .w { color: var(--warn); }
+  #log .e { color: var(--bad); }
+  details summary { cursor: pointer; font-size: .875rem; color: var(--dim); }
+  .hint { font-size: .8125rem; color: var(--dim); margin: 8px 0 0; }
+  .chk { display: flex; align-items: center; gap: 6px; font-size: .8125rem;
+         color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>모티 뇌 테스트</h1>
+  <p class="sub">브라우저 마이크로 AGX의 뇌 서버에 직접 말을 건다. 로봇이 하는 것과 같은
+     프로토콜(§11.5) — 마이크를 계속 흘려보내고 턴 경계는 뇌가 정한다.</p>
+
+  <div class="card">
+    <div class="row">
+      <label for="uri">뇌 주소</label>
+      <input type="text" id="uri" value="ws://192.168.0.5:8765">
+      <button id="go">연결하고 말하기</button>
+      <button id="stop" class="ghost" disabled>중단</button>
+      <span><span class="dot" id="dot"></span><span id="state">끊김</span></span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label>입력</label>
+      <div class="meter"><i id="lvl"></i></div>
+      <label class="chk"><input type="checkbox" id="aec" checked> 에코 캔슬(AEC)</label>
+      <label class="chk"><input type="checkbox" id="tools" checked> 툴 9개 선언</label>
+      <label class="chk"><input type="checkbox" id="bc" checked> 맞장구</label>
+    </div>
+    <p class="hint" id="aechint">AEC를 끄면 로봇에서 AEC가 꺼져 있을 때 무슨 일이 나는지
+       미리 볼 수 있다 — 스피커로 들으면 모티가 자기 목소리에 끼어든다(§18.1).</p>
+  </div>
+
+  <div class="card stats">
+    <div><b id="m1">—</b><span>말 멈춤 → 첫 소리 (근사)</span></div>
+    <div><b id="m2">—</b><span>직전 턴</span></div>
+    <div><b id="m3">0</b><span>끼어들기</span></div>
+    <div><b id="m4">0</b><span>턴</span></div>
+  </div>
+
+  <div class="card">
+    <div id="chat"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>페르소나와 툴 (기본값은 짧은 시험용 — 실제 로봇은 18,344토큰)</summary>
+      <p class="hint">실제 페르소나를 쓰려면 <code>MOTI-HRI</code>의
+         <code>build_persona_system_instruction()</code> 출력을 붙여넣는다. 길어지면
+         첫 턴이 느려지는 것까지 그대로 재현된다(§13.9).</p>
+      <textarea id="system">너는 공감 로봇 모티야. 사용자의 말에 따뜻하게 공감하며 대화해.
+답변은 2~3문장으로 짧게 해. 이모지는 절대 쓰지 마.
+사용자의 감정이 느껴지면 set_emotion을 호출해.
+너에게 직접 말을 건 것이 아니면(혼잣말이면) 정확히 &lt;SILENT&gt;만 출력해.</textarea>
+    </details>
+  </div>
+
+  <div class="card">
+    <details open>
+      <summary>이벤트 로그</summary>
+      <div id="log"></div>
+    </details>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// 이 페이지는 launcher.py가 하는 일을 브라우저에서 그대로 한다:
+//   hello -> 마이크 PCM16 16kHz를 끊임없이 전송 -> 오디오/전사/툴 수신
+// 턴 경계는 뇌가 정한다(§4). 클라이언트에는 VAD가 없다.
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const IN_RATE = 16000, FRAME = 1600;          // 100ms, 마이크 콜백 한 번 분량
+const JITTER = 0.12;                          // §11.0-1: 재생 버퍼 100~200ms
+
+const TOOLS = [
+  ["set_emotion", "로봇 표정을 바꾼다", {emotion: "string"}, ["emotion"]],
+  ["remember_fact", "사용자에 대해 알게 된 사실을 기억한다",
+   {key: "string", value: "string"}, ["key", "value"]],
+  ["forget_me", "기억한 내용을 모두 지운다", {}, []],
+  ["play_gesture", "미리 정의된 제스처를 재생한다", {name: "string"}, ["name"]],
+  ["play_manual_motion", "머리를 지정한 각도로 움직인다",
+   {pan: "integer", tilt: "integer"}, ["pan", "tilt"]],
+  ["start_quiz", "퀴즈를 시작한다", {}, []],
+  ["submit_guess", "사용자의 답을 제출한다", {guess: "string"}, ["guess"]],
+  ["request_hint", "힌트를 요청한다", {}, []],
+  ["end_quiz_early", "퀴즈를 중간에 끝낸다", {}, []],
+].map(([name, description, props, required]) => ({
+  type: "function",
+  function: {
+    name, description,
+    parameters: {
+      type: "object",
+      properties: Object.fromEntries(
+        Object.entries(props).map(([k, t]) => [k, {type: t}])),
+      required,
+    },
+  },
+}));
+
+let ws = null, ctxIn = null, ctxOut = null, micStream = null, node = null;
+let pendingRate = 24000, pendingKind = "reply";
+let playHead = 0, playing = [];
+let turns = 0, bargeIns = 0, lastLoud = 0, awaitingAudio = false;
+let lastTurnMs = null, bestMs = null;
+let sessionId = crypto.randomUUID().replace(/-/g, "");
+let bubble = null;
+
+const t0 = () => performance.now();
+function log(msg, cls = "") {
+  const d = document.createElement("div");
+  const now = new Date().toLocaleTimeString("ko-KR", {hour12: false});
+  d.innerHTML = `<span class="t">${now}</span> <span class="${cls}">${msg}</span>`;
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+function setState(text, cls) {
+  $("state").textContent = text;
+  $("dot").className = "dot " + (cls || "");
+}
+function say(who, text) {
+  // 모티의 문장은 여러 조각으로 도착한다 — 같은 턴이면 한 말풍선에 이어 붙인다.
+  if (who === "moti" && bubble) { bubble.lastChild.textContent += text; return; }
+  const d = document.createElement("div");
+  d.className = "msg " + who;
+  d.innerHTML = `<span class="who">${who === "me" ? "나" : "모티"}</span>`;
+  const body = document.createElement("span");
+  body.textContent = text;
+  d.appendChild(body);
+  $("chat").appendChild(d);
+  $("chat").scrollTop = $("chat").scrollHeight;
+  if (who === "moti") bubble = d;
+  return d;
+}
+
+// ---- 재생 ------------------------------------------------------------------
+function playPcm(int16, rate) {
+  if (!ctxOut) return;
+  const buf = ctxOut.createBuffer(1, int16.length, rate);
+  const f = buf.getChannelData(0);
+  for (let i = 0; i < int16.length; i++) f[i] = int16[i] / 32768;
+  const src = ctxOut.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctxOut.destination);
+  const now = ctxOut.currentTime;
+  if (playHead < now + JITTER) playHead = now + JITTER;
+  src.start(playHead);
+  playHead += buf.duration;
+  playing.push(src);
+  src.onended = () => { playing = playing.filter(s => s !== src); };
+}
+function flushPlayback() {
+  // §11.0-1: 끼어들면 즉시 비운다. 안 그러면 취소된 답변이 몇 초 더 재생된다.
+  playing.forEach(s => { try { s.stop(); } catch (e) {} });
+  playing = [];
+  playHead = 0;
+}
+
+// ---- 마이크 ----------------------------------------------------------------
+const WORKLET = `
+class Cap extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) this.port.postMessage(new Float32Array(ch));
+    return true;
+  }
+}
+registerProcessor('cap', Cap);`;
+
+async function startMic() {
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: $("aec").checked,
+      // 잡음 억제와 자동 게인은 끈다 — EXP-13의 핵심이 운율이고(§12.4),
+      // 이 필터들이 톤을 눌러버리면 감정 채널이 죽는다.
+      noiseSuppression: false,
+      autoGainControl: false,
+    },
+  });
+  ctxIn = new AudioContext({sampleRate: IN_RATE});
+  if (ctxIn.sampleRate !== IN_RATE) {
+    log(`마이크가 ${ctxIn.sampleRate}Hz로 열렸다 — 16kHz로 변환해 보낸다`, "w");
+  }
+  const url = URL.createObjectURL(new Blob([WORKLET], {type: "application/javascript"}));
+  await ctxIn.audioWorklet.addModule(url);
+  node = new AudioWorkletNode(ctxIn, "cap");
+  ctxIn.createMediaStreamSource(micStream).connect(node);
+
+  let acc = [], accLen = 0;
+  const ratio = ctxIn.sampleRate / IN_RATE;
+  node.port.onmessage = e => {
+    let d = e.data;
+    if (ratio !== 1) {                          // 선형 보간 다운샘플
+      const out = new Float32Array(Math.floor(d.length / ratio));
+      for (let i = 0; i < out.length; i++) {
+        const x = i * ratio, j = x | 0, f = x - j;
+        out[i] = d[j] * (1 - f) + (d[j + 1] !== undefined ? d[j + 1] * f : 0);
+      }
+      d = out;
+    }
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    const rms = Math.sqrt(sum / d.length);
+    $("lvl").style.width = Math.min(100, rms * 420) + "%";
+    // "말을 멈춘 시점"의 근사치. 뇌는 이 신호를 쓰지 않는다 — 화면 표시용이다.
+    if (rms > 0.02) { lastLoud = t0(); awaitingAudio = true; }
+
+    acc.push(d); accLen += d.length;
+    while (accLen >= FRAME) {
+      const frame = new Int16Array(FRAME);
+      let k = 0;
+      while (k < FRAME) {
+        const head = acc[0];
+        const take = Math.min(FRAME - k, head.length);
+        for (let i = 0; i < take; i++) {
+          const v = Math.max(-1, Math.min(1, head[i]));
+          frame[k++] = v < 0 ? v * 32768 : v * 32767;
+        }
+        if (take === head.length) acc.shift();
+        else acc[0] = head.subarray(take);
+      }
+      accLen -= FRAME;
+      if (ws && ws.readyState === 1) ws.send(frame.buffer);
+    }
+  };
+}
+
+// ---- 연결 ------------------------------------------------------------------
+async function connect() {
+  $("go").disabled = true;
+  setState("마이크 요청 중…");
+  try {
+    await startMic();
+  } catch (e) {
+    setState("마이크 거부", "err");
+    log("getUserMedia 실패: " + e.message, "e");
+    log("보안 컨텍스트가 아니면 브라우저가 마이크를 막는다 — https 또는 " +
+        "http://localhost 에서 열어야 한다.", "e");
+    $("go").disabled = false;
+    return;
+  }
+  ctxOut = new AudioContext({sampleRate: 24000});
+  setState("연결 중…");
+  ws = new WebSocket($("uri").value.trim());
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({
+      t: "hello",
+      system: $("system").value,
+      tools: $("tools").checked ? TOOLS : [],
+      session_id: sessionId,
+      backchannel: $("bc").checked,
+    }));
+    log("hello 전송 (session " + sessionId.slice(0, 8) + ")");
+  };
+
+  ws.onmessage = ev => {
+    if (ev.data instanceof ArrayBuffer) {
+      const pcm = new Int16Array(ev.data);
+      if (pendingKind === "reply" && awaitingAudio) {
+        lastTurnMs = t0() - lastLoud;
+        awaitingAudio = false;
+        $("m2").textContent = (lastTurnMs / 1000).toFixed(2) + "s";
+        if (bestMs === null || lastTurnMs < bestMs) bestMs = lastTurnMs;
+        $("m1").textContent = (bestMs / 1000).toFixed(2) + "s";
+      }
+      playPcm(pcm, pendingRate);
+      return;
+    }
+    const m = JSON.parse(ev.data);
+    switch (m.t) {
+      case "ready":
+        setState("연결됨 — 말하세요", "on");
+        $("stop").disabled = false;
+        log(m.resumed ? `ready (이어받음, ${m.turns}턴)` : "ready");
+        break;
+      case "audio":
+        pendingRate = m.rate || 24000;
+        pendingKind = m.kind || "reply";
+        break;
+      case "transcript":
+        if (m.role === "user") { bubble = null; say("me", m.text); }
+        else say("moti", m.text);
+        break;
+      case "tool_call":
+        for (const c of m.calls) {
+          log(`tool_call ${c.name}(${JSON.stringify(c.args)})`, "w");
+        }
+        // 로봇이 하는 일을 흉내낸다: 실행하고 결과를 돌려준다.
+        ws.send(JSON.stringify({
+          t: "tool_result",
+          results: m.calls.map(c => ({id: c.id, name: c.name, result: "ok"})),
+        }));
+        break;
+      case "interrupted":
+        bargeIns++;
+        $("m3").textContent = bargeIns;
+        flushPlayback();
+        bubble = null;
+        log("interrupted — 재생 버퍼 비움", "w");
+        break;
+      case "turn_complete":
+        turns++;
+        $("m4").textContent = turns;
+        bubble = null;
+        log("turn_complete");
+        break;
+      case "error":
+        log("뇌 오류: " + (m.detail || "?"), "e");
+        break;
+    }
+  };
+
+  ws.onerror = () => log("웹소켓 오류 — 주소와 뇌 서버 상태를 확인", "e");
+  ws.onclose = () => { setState("끊김"); teardown(); };
+}
+
+function teardown() {
+  $("go").disabled = false;
+  $("stop").disabled = true;
+  flushPlayback();
+  if (node) { node.port.onmessage = null; node.disconnect(); node = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (ctxIn) { ctxIn.close(); ctxIn = null; }
+  $("lvl").style.width = "0";
+}
+
+$("go").onclick = connect;
+$("stop").onclick = () => { if (ws) ws.close(); else teardown(); };
+$("aec").onchange = () => {
+  $("aechint").style.color = $("aec").checked ? "" : "var(--bad)";
+  if (ws) log("AEC 변경은 다시 연결해야 적용된다", "w");
+};
+log("준비됨. 뇌 주소를 확인하고 '연결하고 말하기'를 누르세요.");
+</script>
+</body>
+</html>
