@@ -1295,6 +1295,30 @@ The general rule, since §11.5 lists `{"t":"error"}` as having *"no Gemini count
 message that can end a turn must end the turn.** A protocol addition that the client merely logs is a
 hang waiting for the first backend failure.
 
+**Re-measured after both fixes** (vLLM restart took 29 min, consistent with Q17):
+
+| | before | after |
+|---|---|---|
+| EXP-8 perceived, n=8 | mean 2.02s / p95 2.82s / min 1.42s | **mean 2.11s / p95 3.33s / min 1.42s** |
+| `test_pipeline` first audio (a1_tired) | 1.47s (§13.2) | **1.61 / 1.73 / 1.95 / 2.27s** over 4 runs |
+| 500s from the mm-cache race | the run that prompted this | **0 across 8 EXP-8 runs + 4 pipeline runs** |
+
+The crash is gone — every one of those runs fires the exact trigger (transcribe and reply concurrent on
+identical audio) and none failed. Turn detection (3 splits, budget 4), smart-turn separation, emoji
+suppression (0/3) and the `<SILENT>` gate (6/6) all still pass.
+
+⚠️ **But do not read "2.11 ≈ 2.02" as unchanged.** The wire figure is within noise, yet four pipeline
+runs put the *floor* at 1.61s against §13.2's 1.47s — the best case got worse, which noise does not do.
+The plausible mechanism is exactly what the fix trades away: with the processor cache off, the reply call
+and the transcription call each encode the audio (~29 ms per second of speech, §12.3, so ~0.26s for this
+9s clip) instead of the second reusing the first, and the transcription competes for the GPU while the
+reply is still decoding.
+
+**Not measured, and deliberately so.** Isolating it needs a 29-minute restart, and the result could not
+change anything: the cache cannot be left on — it crashes the engine. The real alternative is serializing
+the two calls, which §13.2 measured at 3.96s vs 1.47s to first audio. Paying ~0.2s to keep 2.4s is not a
+close decision. Revisit only if a rebuilt image (§13.6) fixes the cache race itself.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
