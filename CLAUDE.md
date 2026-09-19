@@ -1282,8 +1282,7 @@ restarting, which is the right order and should be the habit.
 
 Remaining levers on the ~1s first-sentence decode, in rough order of appeal:
 - a shorter opening sentence from the persona (prompt-side, no infrastructure risk)
-- a q4 QAT checkpoint (§5.4 rule 6) — decode is memory-bandwidth bound, so this should help;
-  costs a download and one 33-minute restart
+- ~~a q4 QAT checkpoint (§5.4 rule 6)~~ — **investigated 2026-09-19 and deferred; see §13.10**
 
 ### 13.7 🔴 `[MEASURED]` Two ways a failed turn became an infinite hang (2026-09-19)
 
@@ -1421,6 +1420,39 @@ config passes no tool names, so the marker list was effectively empty.
 merely give optimistic numbers; it removes whole code paths from the test. Tool parsing is ~60 lines of
 the pipeline and no test had ever run it against a declared tool list.
 
+### 13.10 ⛔ `[DEFERRED]` q4 quantization — there is no supported checkpoint for E4B on vLLM
+
+§13.5 and §13.9 both end by pointing at quantization, and it was written up as if a vendor path
+existed. It does not. Searching the Hub for `gemma-4-E4B` quantizations (2026-09-19):
+
+| what exists | usable here? |
+|---|---|
+| MLX 4-bit (3) | ❌ Apple Silicon |
+| GGUF, including the QAT ones (19) | ❌ **llama.cpp only, and §5.4 rule 7 forbids llama.cpp on any audio path** (E2B audio is broken there on Orin). Audio is the primary input since EXP-13 |
+| `unsloth/...-unsloth-bnb-4bit` | ⚠️ bitsandbytes — limited vLLM support, routinely breaks on multimodal |
+| `Chunity/gemma-4-E4B-it-AWQ-4bit` | ⚠️ the only plausible candidate, an unvetted community upload |
+
+§5.3's checkpoint table lists AWQ for **26B and 31B only**. There is no E4B entry, and the
+`{model}-qat-q4_0-unquantized` pattern in §5.4 rule 5 is, as the name says, *unquantized* — it is the
+MTP drafter base, not a memory-bandwidth win.
+
+Stacked on top of that:
+1. **What happens to the audio tower is unknown.** AWQ quantizes the LLM's linear layers; how a given
+   uploader handled the audio encoder is up to them. This is HARU's W4A4 lesson (§13 escalation note)
+   in a place where it now costs more — audio is the input, not a side channel.
+2. **This container may have no AWQ kernels for sm_87.** EXP-3 (§13.6) already established that the
+   image is narrowly built: no numba, a transformers that does not know `gemma4_assistant`.
+3. **29 minutes per attempt**, and EXP-3 spent two of those learning point 2 the hard way.
+
+**The decisive objection is not any of those — it is that there is no quality baseline.** EXP-1 was
+never run (§12, Q2). Everything measured so far is speed and transcription accuracy; nothing measures
+Korean empathetic conversation quality. Changing the model's numerics before that exists means a
+degradation could not be distinguished from ordinary variance. **Quantize after EXP-1, not before.**
+
+Deferred, not cancelled. Revisit when (a) a quality baseline exists and (b) live use shows decode speed
+is actually the dominant complaint — which §13.9's 2.65s suggests but has never been confirmed with a
+person in front of the robot.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
@@ -1546,14 +1578,23 @@ starting the next; do not run parallel blockers just to save days we do not need
 - [ ] **The real robot on the same LAN** — the only Stage 4 item left, and it is the one that
       decides whether any of the above survives contact with a microphone (§14 status note)
 
-**Stage 5 — behavior and measurement**
-- [ ] Barge-in + playback buffer flush → EXP-9 (**on the robot**, not the AGX — §12 note)
-- [ ] EXP-8 end-to-end latency, with `ENABLE_VOICE_SHIFT` on/off arms
-- [ ] EXP-10 thermal/power, EXP-3 MTP
-- [ ] `<SILENT>` gate → EXP-7
-- [ ] EXP-1 (E4B vs 26B-A4B) only if Korean quality looks marginal
-- [ ] EXP-12 backchanneling
+**Stage 5 — behavior and measurement** (ordered 2026-09-19; everything here needs the robot)
+- [ ] **① AEC first** — `python3 -c "import aec_audio_processing"` on the robot before anything else
+      (§18.1). If it raises, echo cancellation is off no matter what `.env` says, and our 0.07s
+      barge-in will make the robot interrupt itself. Everything below is unreadable until this is known
+- [ ] ② The five remaining checks in `docs/robot_integration.md` §4, in that order
+- [ ] ③ EXP-9 barge-in + playback flush, with a real mic in the loop
+- [ ] ④ EXP-8 again on the robot — §13.9's 2.65s is over a loopback socket with no mic, no AEC,
+      no motors. Expect it to move
+- [ ] ⑤ EXP-10 thermal/power under motors + camera + face UI together
+- [ ] **⑥ EXP-1 (E4B vs 26B-A4B Korean quality)** — promoted from "only if quality looks marginal".
+      §13.10 needs it: no numeric change to the model can be judged without a quality baseline, and
+      after a live session there will finally be an informed opinion about what to rate
+- [x] `<SILENT>` gate → EXP-7 ✅ 6/6 on text (§9.3a); still untested on audio — needs self-talk
+      recordings, worth making during the robot session
+- [x] EXP-12 backchanneling ✅ built and measured (§12.7), window is narrow
 - [x] ~~EXP-4/5/6~~ — cancelled, they only existed to validate the deleted legs (§12.5)
+- [x] ~~EXP-3 MTP~~ — blocked by the container (§13.6); ~~q4~~ deferred until ⑥ (§13.10)
 
 **Stage 6 — phase 2 transport**
 - [ ] Tailscale; verify `direct` not `relay` (§18); re-measure EXP-8 over it
