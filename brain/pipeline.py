@@ -67,6 +67,13 @@ _TOOL_OPEN, _TOOL_CLOSE = "<|tool_call>", "<tool_call|>"
 _TOOL_REGION = re.compile(re.escape(_TOOL_OPEN) + r"(.*?)" + re.escape(_TOOL_CLOSE), re.S)
 _BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
+# §9.3 proactive audio: the persona tells the model to answer with exactly this when the
+# user was not talking to it. The brain must drop it rather than speak it — the token is
+# a control signal, and TTS would happily pronounce it. The wording that makes the model
+# emit it reliably lives on the robot side (its persona); see brain/test_gates.py for the
+# measurement that settled it.
+SILENT_TOKEN = "<SILENT>"
+
 
 def _parse_call(body: str) -> dict | None:
     """`call:set_emotion{emotion:<|"|>sad<|"|>}` -> {id, name, args}.
@@ -288,6 +295,7 @@ class Turn:
             t.get("function", {}).get("name", "") for t in session.tools) or ()
         self.cancelled = False
         self.spoke = False                  # did the user actually hear anything?
+        self.silent = False                 # model chose not to answer (§9.3)
         self.marks: dict[str, float] = {}   # §20 rule 5: instrument from the first commit
 
     def cancel(self) -> None:
@@ -338,7 +346,10 @@ class Turn:
             # part that might still turn out to be a tool call.
             clean, found, raw = strip_tool_calls(raw, self.tool_names)
             calls += found
-            if not clean:
+            if SILENT_TOKEN in clean:
+                clean = clean.replace(SILENT_TOKEN, "")
+                self.silent = True
+            if not clean.strip():
                 continue
             buf += clean
             if "first_token" not in self.marks:

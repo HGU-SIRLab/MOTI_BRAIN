@@ -466,12 +466,47 @@ Tracked as Q19.
 ### 9.3 Proactive audio
 `[REPORTED]` Gemini's proactive audio "lets a developer instruct the agent to only respond when directly addressed or when a reply is contextually relevant, rather than responding to every utterance."
 
-Implementation `[UNVERIFIED]` — validate in EXP-7:
+### 9.3a ✅ `[MEASURED]` EXP-7 — the wording in v5 does not work (2026-09-19)
+
+v5 proposed this, tagged `[UNVERIFIED]`:
 ```
 사용자가 혼잣말을 하거나, 생각을 정리 중이거나, 너에게 말한 게 아니면
 정확히 <SILENT> 만 출력해. 그 외에는 평소처럼 2-3문장으로 답해.
 ```
-Pipeline skips TTS on `<SILENT>`. Later: a pre-LLM classifier so silence costs nothing.
+Measured **4/6**. It answered all three addressed utterances correctly but stayed silent
+on only one of three self-talk cases — and that one was literally prefixed "(혼잣말)",
+which real audio will never carry. Left as written, the robot would interrupt someone
+thinking out loud.
+
+**Naming the concrete shapes of self-talk gets 6/6** (`brain/test_gates.py`):
+```
+너에게 직접 말을 건 것이 아니면 응답하지 마라. 다음은 모두 혼잣말이므로 정확히 <SILENT>만 출력한다:
+- 할 일이나 순서를 스스로 정리하는 말 ("이걸 먼저 하고... 아니다")
+- 뭔가를 떠올리거나 메모하듯 되뇌는 말 ("아 맞다, 우유 사야지")
+- 스스로에게 묻는 말, 말끝을 흐리며 생각하는 말
+너를 부르거나, 너에게 감정을 털어놓거나, 너에게 질문하면 평소처럼 2-3문장으로 답한다.
+```
+A "default to silence, when unsure stay quiet" variant also scored 6/6 and was
+**rejected**: for a companion robot, staying silent when spoken to is a worse failure than
+answering something not addressed to it.
+
+`n=6`, so this is a direction, not a validated rate. Two caveats worth holding:
+- Tested on **text**. Production is audio, where prosody should help — self-talk is
+  quieter and trails off, and §12.4 showed E4B does hear tone. Untested: no self-talk
+  recordings exist yet. Worth one when recordings are next made.
+- The wording belongs to the **robot's persona**, not the brain. The brain only honors the
+  token (`SILENT_TOKEN` in `brain/pipeline.py`): it strips it and synthesizes nothing, so
+  the turn completes silently. Verified TTS is never called.
+
+Later: a pre-LLM classifier so silence costs nothing.
+
+### 9.3b ✅ `[MEASURED]` Emoji suppression works with one line
+
+§12.4 flagged that E4B emits emoji, which TTS would read aloud or choke on. Measured:
+**3/3 replies contained emoji without an instruction, 0/3 with `이모지는 절대 쓰지 마.`,
+including through the audio input path.** One prompt line is enough; no output filtering
+needed. Kept as a gate in `brain/test_gates.py` so a model or prompt change cannot
+quietly undo it.
 Bonus: `[OFFICIAL]` SenseVoiceSmall's AED can distinguish laughter/cough/ambient noise from speech.
 
 ---
