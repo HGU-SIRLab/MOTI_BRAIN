@@ -166,6 +166,17 @@ class TurnDetector:
                         turns.append(audio)
         return turns
 
+    def provisional(self) -> bytes | None:
+        """The turn as it stands mid-pause, for speculative generation.
+
+        Same bytes the confirmed turn will contain if the speaker does not resume, so a
+        reply generated from this is valid the moment the turn closes.
+        """
+        if (not self._speaking or self._silence == 0
+                or self._speech_windows < self.min_speech_windows):
+            return None
+        return b"".join(self._turn[:-self._silence])
+
     def flush(self) -> bytes | None:
         """End an in-progress turn, e.g. the stream closed. Returns audio or None."""
         if self._speaking and self._speech_windows >= self.min_speech_windows:

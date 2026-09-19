@@ -42,6 +42,11 @@ BARGE_WINDOWS = 3
 # utterances across five clips — the robot talking over someone mid-sentence. Overlap
 # only disappears at 1.4s, because the longest intra-utterance pause we have is 1.38s.
 BACKCHANNEL_AFTER = 1.4
+# Speculative generation (§9.1d): start replying into a buffer this far into a pause.
+# It never makes the robot speak sooner — it only has the answer ready when the turn is
+# confirmed, taking the brain's ~0.5s off what the user waits through. If the speaker
+# resumes, the work is thrown away; cancellation already costs 70ms (§13.3).
+SPECULATE_AFTER = 0.5
 
 log = logging.getLogger("brain")
 
@@ -65,6 +70,11 @@ class Connection:
         # this server costs ~33 minutes (§9.1a note on model loading).
         self.backchannel_on = True
         self.backchannel_after = BACKCHANNEL_AFTER
+        self.speculate = True
+        self._spec: Turn | None = None      # reply being prepared during the pause
+        self._spec_task: asyncio.Task | None = None
+        self._spec_audio: bytes = b""       # the audio it was generated from
+        self._spec_out: list[tuple[str, dict]] = []
         self.detector = TurnDetector()
         self.session: Session | None = None
         self.turns: asyncio.Queue = asyncio.Queue()
@@ -153,6 +163,7 @@ class Connection:
 
         if self.detector.speech_run:
             self._acked = False      # they are talking again; arm for the next pause
+            self._drop_speculation()  # whatever we were preparing answers the wrong thing
 
         # Barge-in (§9.2, §11.0-1/-4): the user started talking while Moti was replying.
         # Cancel generation *and* synthesis, and tell the robot — it stops playback and
@@ -181,6 +192,14 @@ class Connection:
             log.info("backchannel (%.0fms of silence)",
                      self.detector.silence_secs * 1000)
 
+        # Start preparing a reply while the VAD is still deciding.
+        if (self.speculate and self.session is not None and self.current is None
+                and self._spec is None and not turns
+                and self.detector.silence_secs >= SPECULATE_AFTER):
+            provisional = self.detector.provisional()
+            if provisional:
+                self._begin_speculation(provisional)
+
         for audio in turns:
             await self.turns.put(audio)
 
@@ -190,6 +209,7 @@ class Connection:
         if kind == "hello":
             sid = msg.get("session_id") or ""
             self.backchannel_on = bool(msg.get("backchannel", True))
+            self.speculate = bool(msg.get("speculate", True))
             self.backchannel_after = float(msg.get("backchannel_after",
                                                    BACKCHANNEL_AFTER))
             prior = SESSIONS.get(sid)
@@ -219,13 +239,58 @@ class Connection:
         else:
             log.warning("unknown message %r", kind)
 
+    # ---- speculative generation ----------------------------------------
+    def _begin_speculation(self, audio: bytes) -> None:
+        assert self.session is not None
+        turn = Turn(self.session, self.tts, audio)
+        self._spec, self._spec_audio, self._spec_out = turn, audio, []
+
+        async def collect(kind: str, payload: dict) -> None:
+            self._spec_out.append((kind, payload))   # buffered, not sent
+
+        self._spec_task = asyncio.create_task(turn.run(collect))
+        log.info("speculating on %.1fs of audio", len(audio) / 2 / 16000)
+
+    def _drop_speculation(self) -> None:
+        if self._spec is not None:
+            self._spec.cancel()
+        if self._spec_task is not None:
+            self._spec_task.cancel()
+        self._spec = self._spec_task = None
+        self._spec_audio = b""
+        self._spec_out = []
+
+    async def _flush_speculation(self) -> bool:
+        """Send the prepared reply if it answers exactly this turn."""
+        task, turn, out = self._spec_task, self._spec, self._spec_out
+        self._spec = self._spec_task = None
+        self._spec_out = []
+        if task is None or turn is None:
+            return False
+        try:
+            await task
+        except asyncio.CancelledError:
+            return False
+        if turn.cancelled:
+            return False
+        for kind, payload in out:
+            await self.emit(kind, payload)
+        await self.send(t="turn_complete")
+        log.info("speculation used (%d events)", len(out))
+        return True
+
     async def worker(self) -> None:
         while True:
             item = await self.turns.get()
             try:
                 if isinstance(item, bytes):
+                    # Identical audio means the prepared reply is still the right one.
+                    if item == self._spec_audio and await self._flush_speculation():
+                        continue
+                    self._drop_speculation()
                     await self.run_turn(pcm=item)
                 else:
+                    self._drop_speculation()
                     await self.run_turn(text=item)
             except Exception:                        # noqa: BLE001 — one bad turn must
                 log.exception("turn failed")         # not kill the session

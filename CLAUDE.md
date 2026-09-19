@@ -527,6 +527,28 @@ It also degrades to timer-only if the model fails to load.
 were short. Expect roughly 3.2s on natural speech, whichever endpointing is used. That is the
 real number, and it is worse than previously recorded.
 
+### 9.1d `[IMPLEMENTED]` Speculative generation — take the brain off the critical path
+
+Direction check after §9.1c. The wait cannot be shortened without interrupting people, and
+smart-turn only bought 0.46s of it. But nothing says the brain has to be *idle* during that
+wait.
+
+So: at 0.5s into a pause the brain starts generating and synthesizing the reply **into a
+buffer**. It is never sent early — the robot does not speak one millisecond sooner. When the
+turn is confirmed, the answer is already made and goes out immediately, which removes the
+brain's ~0.5s (§13.4) from what the user waits through. If the speaker resumes instead, the
+work is thrown away.
+
+Why this is safe where shortening the wait is not: being wrong costs GPU time, not an
+interruption. And the machinery already exists — `Turn.cancel()` stops generation and
+synthesis together, measured at 70ms (§13.3).
+
+The buffered reply is only used when the confirmed turn's audio is **byte-identical** to what
+was speculated on. Any resumed speech changes it, and then it is discarded rather than
+answering a question the user did not finish asking.
+
+Per-session switch `speculate` in `hello`, alongside `backchannel`.
+
 ### 9.2 Barge-in
 `[OFFICIAL]` Silero VAD + smart-turn-v3 together give accurate, low-latency turn start/stop signals. v5 relied on Pipecat to turn those signals into interruption logic that yields to a real interruption without reacting to brief mid-sentence pauses — **we now implement that logic ourselves** (§11.0 items 1 and 4).
 

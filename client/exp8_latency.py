@@ -1,5 +1,10 @@
 """EXP-8: end-to-end voice-to-voice latency, as a distribution (§12).
 
+⚠️ Measures one *conversational turn*, so it needs a clip that is one turn. Pointed at the
+30s spontaneous monologues it reports nonsense (−24s means the brain replied to an early
+turn while the client was still sending). Those recordings exist to measure endpointing
+(§9.1c), not turn latency; the numbers here come from short utterances.
+
 Single measurements have ranged 0.24–1.29s, so a single number would be meaningless.
 §12 asks for mean and p95. Measured from the client, through the wire, which is what the
 user actually experiences — not from inside the pipeline.
@@ -32,9 +37,9 @@ from client import local_live  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 URI = "ws://127.0.0.1:8765"
 CHUNK = 1600
-TAIL_SILENCE_SEC = 2.5
-STOP_SECS = 1.5          # must match TurnDetector's stop_secs (§9.1a)
-CLIPS = ["a1_tired", "a2_happy", "a3_anxious", "c1_neutral"]
+TAIL_SILENCE_SEC = 6.0   # natural pauses reach 2.98s; the veto can wait to 4.0s
+STOP_SECS = 1.5          # timer floor; the veto (§9.1c) may extend past it
+CLIPS = ["s1_recall", "s2_project", "s3_weekend", "s6_explain"]
 CONFIG = SimpleNamespace(
     system_instruction=("너는 공감 로봇 모티야. 사용자의 말에 따뜻하게 공감하며 대화해. "
                         "답변은 2~3문장으로 짧게 해. 이모지는 쓰지 마."),
