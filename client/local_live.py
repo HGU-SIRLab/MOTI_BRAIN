@@ -27,11 +27,18 @@ import asyncio
 import inspect
 import json
 import typing
+import uuid
 from types import SimpleNamespace
 
 import websockets
 
 _JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
+
+# One id per robot process. launcher.py's connection_manager() calls connect() afresh on
+# every reconnect, so the id cannot live on the connection object; and it must NOT be
+# derived from the persona, because the persona changes mid-session the moment
+# remember_fact learns the user's name — which is exactly when losing history would hurt.
+SESSION_ID = uuid.uuid4().hex
 
 
 def tool_schemas(tools) -> list[dict]:
@@ -90,6 +97,8 @@ class Session:
         self._ws = ws
         self._inbox: asyncio.Queue = asyncio.Queue()
         self._pending_rate: int | None = None
+        self.resumed = False            # set from the brain's `ready` (§11.5)
+        self.turns_carried = 0
         self._reader = asyncio.create_task(self._read())
 
     async def _read(self) -> None:
@@ -106,6 +115,8 @@ class Session:
                     self._pending_rate = payload.get("rate")
                     continue
                 if kind == "ready":
+                    self.resumed = bool(payload.get("resumed"))
+                    self.turns_carried = payload.get("turns", 0)
                     continue
                 msg = _empty_message()
                 if kind == "transcript":
@@ -180,7 +191,8 @@ class _Connect:
         system = getattr(self._config, "system_instruction", None) or ""
         tools = getattr(self._config, "tools", None) or []
         await self._ws.send(json.dumps(
-            {"t": "hello", "system": system, "tools": tool_schemas(tools)},
+            {"t": "hello", "system": system, "tools": tool_schemas(tools),
+             "session_id": SESSION_ID},
             ensure_ascii=False))
         self._session = Session(self._ws)
         return self._session

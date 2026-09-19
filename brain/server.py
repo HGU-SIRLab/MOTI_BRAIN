@@ -39,6 +39,13 @@ BARGE_WINDOWS = 3
 
 log = logging.getLogger("brain")
 
+# §11.5 [MANDATORY]: the brain holds conversation state, so a dropped link — likely over
+# Tailscale — does not wipe the conversation. Keyed by an id the client keeps across its
+# own reconnects. Bounded because an always-on server would otherwise accumulate sessions
+# forever; a lab robot needs a handful, and evicting the oldest loses the least.
+SESSIONS: dict[str, Session] = {}
+MAX_SESSIONS = 8
+
 
 class Connection:
     """One robot. Owns its turn detector and conversation state."""
@@ -150,9 +157,26 @@ class Connection:
         msg = json.loads(raw)
         kind = msg.get("t")
         if kind == "hello":
-            self.session = Session(system=msg["system"], tools=msg.get("tools") or [])
-            await self.send(t="ready")
-            log.info("session opened, %d tools", len(self.session.tools))
+            sid = msg.get("session_id") or ""
+            prior = SESSIONS.get(sid)
+            if prior is not None:
+                # Resume. Take the *new* persona: launcher rebuilds it on reconnect and
+                # it may now contain the user's name, learned via remember_fact mid-session.
+                prior.system = msg["system"]
+                prior.tools = msg.get("tools") or []
+                self.session = prior
+            else:
+                self.session = Session(system=msg["system"],
+                                       tools=msg.get("tools") or [])
+                if sid:
+                    if len(SESSIONS) >= MAX_SESSIONS:
+                        SESSIONS.pop(next(iter(SESSIONS)))
+                    SESSIONS[sid] = self.session
+            await self.send(t="ready", resumed=prior is not None,
+                            turns=len(self.session.history) // 2)
+            log.info("session %s: %s, %d tools, %d turns carried over",
+                     sid[:8] or "(anon)", "resumed" if prior else "new",
+                     len(self.session.tools), len(self.session.history) // 2)
         elif kind == "text":
             await self.turns.put(msg["text"])
         elif kind == "tool_result":

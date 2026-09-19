@@ -587,11 +587,26 @@ same fields, same `fn(**(fc.args or {}))` splat, same `turn_complete` exit — a
 google-genai deriving declarations from signatures. The brain needs those schemas, so the robot must send
 them at handshake (derive from `inspect.signature` + docstring).
 
-**Reconnection `[MANDATORY]` for phase 2**: over Tailscale the link can drop, so `launcher.py`'s existing
-`connection_manager()` reconnect loop stays load-bearing — do **not** treat it as dead code. Gemini's
-`go_away` / `session_resumption_update` fields may stay unused, but **the brain must hold conversation state
-server-side and resume it on reconnect**, or a dropped link wipes the conversation. State lives on the AGX
-anyway, so this is natural.
+**Reconnection `[MANDATORY]` for phase 2 — ✅ implemented and verified (2026-09-19).** Over Tailscale the
+link will drop, so `launcher.py`'s existing `connection_manager()` reconnect loop stays load-bearing — do
+**not** treat it as dead code. Gemini's `go_away` / `session_resumption_update` stay unused, but the brain
+holds conversation state and resumes it, or a dropped link wipes the conversation.
+
+How: the client sends a `session_id` in `hello`; the brain keys sessions by it and reuses on reconnect,
+adopting the *new* persona from that handshake (launcher rebuilds it, and by then it may contain the user's
+name learned via `remember_fact`). `ready` reports `resumed` and the number of turns carried over.
+
+Two decisions worth keeping:
+- The id is **one UUID per robot process**, generated at shim import. It cannot live on the connection
+  object, since launcher calls `connect()` afresh each reconnect.
+- It must **not** be derived from the persona. Hashing the system prompt looks tempting and fails exactly
+  when it matters: the persona changes the moment `remember_fact` learns the user's name, so the key would
+  rotate mid-conversation and drop the history.
+- `SESSIONS` is bounded (8, oldest evicted). An always-on server otherwise accumulates them forever — the
+  same unbounded-growth bug as the conversation history in §13.1.
+
+Verified by `client/test_reconnect.py`: talk, disconnect, reconnect, then ask what was said before the
+drop. The model answered "밤을 새워서 피곤하다는 내용이었죠" — the conversation survived.
 
 ---
 
