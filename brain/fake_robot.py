@@ -23,7 +23,8 @@ import websockets
 ROOT = Path(__file__).resolve().parent.parent
 URI = "ws://127.0.0.1:8765"
 CHUNK = 1600                    # 100ms of PCM16 @16kHz, about one mic callback
-TAIL_SILENCE_SEC = 2.5          # the pause that ends a turn (brain's stop_secs is 1.5)
+TAIL_SILENCE_SEC = 6.0          # must outlast the veto's max_wait (4.0s, §9.1c),
+                                # or the brain never sees the audio that closes the turn
 
 SYSTEM = ("너는 공감 로봇 모티야. 사용자의 말에 따뜻하게 공감하며 대화해. "
           "답변은 2~3문장으로 짧게 해. 이모지는 쓰지 마. "

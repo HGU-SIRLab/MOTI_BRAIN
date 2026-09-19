@@ -47,6 +47,10 @@ BACKCHANNEL_AFTER = 1.4
 # confirmed, taking the brain's ~0.5s off what the user waits through. If the speaker
 # resumes, the work is thrown away; cancellation already costs 70ms (§13.3).
 SPECULATE_AFTER = 0.5
+# Closing a turn is driven by incoming audio, so a client that stops sending leaves it
+# open forever. launcher.py can do exactly that — its RMS gate suppresses silent audio
+# while the robot is "asleep" to avoid paying Gemini for it. Wall-clock backstop.
+STALL_TIMEOUT = 6.0
 
 log = logging.getLogger("brain")
 
@@ -75,6 +79,7 @@ class Connection:
         self._spec_task: asyncio.Task | None = None
         self._spec_audio: bytes = b""       # the audio it was generated from
         self._spec_out: list[tuple[str, dict]] = []
+        self._last_audio = 0.0
         self.detector = TurnDetector()
         self.session: Session | None = None
         self.turns: asyncio.Queue = asyncio.Queue()
@@ -159,6 +164,7 @@ class Connection:
     async def on_binary(self, pcm: bytes) -> None:
         if self.session is None:
             return
+        self._last_audio = asyncio.get_running_loop().time()
         turns = self.detector.feed(pcm)
 
         if self.detector.speech_run:
@@ -243,10 +249,14 @@ class Connection:
     def _begin_speculation(self, audio: bytes) -> None:
         assert self.session is not None
         turn = Turn(self.session, self.tts, audio)
-        self._spec, self._spec_audio, self._spec_out = turn, audio, []
+        # The buffer must be a captured local, not `self._spec_out`. Closing over the
+        # attribute meant that reassigning it in _flush_speculation left the collector
+        # appending into a fresh list, and the prepared reply arrived as 0 events.
+        buffer: list[tuple[str, dict]] = []
+        self._spec, self._spec_audio, self._spec_out = turn, audio, buffer
 
         async def collect(kind: str, payload: dict) -> None:
-            self._spec_out.append((kind, payload))   # buffered, not sent
+            buffer.append((kind, payload))           # buffered, not sent
 
         self._spec_task = asyncio.create_task(turn.run(collect))
         log.info("speculating on %.1fs of audio", len(audio) / 2 / 16000)
@@ -279,6 +289,20 @@ class Connection:
         log.info("speculation used (%d events)", len(out))
         return True
 
+    async def watchdog(self) -> None:
+        """Close an open turn if the client goes quiet (see STALL_TIMEOUT)."""
+        while True:
+            await asyncio.sleep(1.0)
+            if self.session is None or self.current is not None:
+                continue
+            idle = asyncio.get_running_loop().time() - self._last_audio
+            if self._last_audio and idle >= STALL_TIMEOUT:
+                pending = self.detector.flush()
+                self._last_audio = 0.0
+                if pending:
+                    log.warning("client silent %.1fs — closing turn anyway", idle)
+                    await self.turns.put(pending)
+
     async def worker(self) -> None:
         while True:
             item = await self.turns.get()
@@ -300,6 +324,7 @@ class Connection:
 async def handle(ws, tts: Tts, backchannel: Backchannel) -> None:
     conn = Connection(ws, tts, backchannel)
     worker = asyncio.create_task(conn.worker())
+    watchdog = asyncio.create_task(conn.watchdog())
     log.info("robot connected: %s", ws.remote_address)
     try:
         async for message in ws:
@@ -311,6 +336,7 @@ async def handle(ws, tts: Tts, backchannel: Backchannel) -> None:
         pass
     finally:
         worker.cancel()
+        watchdog.cancel()
         log.info("robot disconnected")
 
 
