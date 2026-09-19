@@ -61,7 +61,7 @@ def test_strip_tool_calls() -> None:
     bare = 'set_emotion{emotion:<|"|>sad<|"|>} 며칠 내내 밤을 새우셨군요.'
     text, calls, tail = strip_tool_calls(bare, names)
     assert "set_emotion" not in text and not tail, (text, tail)
-    assert json.loads(calls[0]["arguments"]) == {"emotion": "sad"}, calls
+    assert calls[0]["args"] == {"emotion": "sad"}, calls   # dict, and named args
 
     # Ordinary braces must survive: only declared tool names count as a call.
     text, calls, _ = strip_tool_calls("수식은 f{x}처럼 씁니다.", names)
@@ -72,7 +72,7 @@ def test_strip_tool_calls() -> None:
     text, calls, tail = strip_tool_calls(real, names)
     assert text == "아이고, 피곤하시겠어요." and not tail, (text, tail)
     assert calls[0]["name"] == "set_emotion", calls
-    assert json.loads(calls[0]["arguments"]) == {"emotion": "sad"}, calls
+    assert calls[0]["args"] == {"emotion": "sad"}, calls   # dict, and named args
 
     # ...and it must survive arriving in fragments, which is how streaming delivers it.
     raw, spoken, found = "", "", []

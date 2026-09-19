@@ -552,13 +552,16 @@ not a design choice. `launcher.py` uses exactly four session methods and reads e
 
 | Direction | Payload | Maps to launcher.py |
 |---|---|---|
+| robot → brain | `{"t":"hello", "system":…, "tools":[…]}` | the `LiveConnectConfig` equivalent: persona + tool schemas, sent once at session open |
+| brain → robot | `{"t":"ready"}` | handshake ack; no Gemini counterpart |
 | robot → brain | binary frame: raw PCM16 16kHz mic audio | `send_realtime_input(audio=Blob(...))` |
 | robot → brain | `{"t":"text", "text":…}` | `send_client_content(turns=Content(...), turn_complete=True)` |
 | robot → brain | `{"t":"tool_result", "results":[{id,name,result}]}` | `send_tool_response(function_responses=[...])` |
-| brain → robot | binary frame: output PCM (match the existing 24kHz playback path) | `message.data` |
+| brain → robot | `{"t":"audio", "rate":…, "bytes":…}` then a binary frame of PCM | `message.data`. The rate header has no Gemini counterpart and is needed because Piper emits 22,050Hz while the robot's playback path was built for Gemini's 24kHz (§8.3) — the client must be told, not assume. Resampling could remove it later. |
 | brain → robot | `{"t":"interrupted"}` | `server_content.interrupted` |
 | brain → robot | `{"t":"transcript","role":"user"\|"model","text":…}` | `server_content.input_transcription` / `output_transcription` |
-| brain → robot | `{"t":"tool_call","calls":[{id,name,args}]}` | `message.tool_call.function_calls` |
+| brain → robot | `{"t":"tool_call","calls":[{id,name,args}]}` | `message.tool_call.function_calls`. **`args` is a dict, not a JSON string** — `launcher.py` splats it as `fn(**(fc.args or {}))`. Emitting `arguments` as a string (as the OpenAI API does) would break the robot. |
+| brain → robot | `{"t":"error","detail":…}` | no Gemini counterpart; one failed turn must not kill the session |
 | brain → robot | `{"t":"turn_complete"}` | `server_content.turn_complete` |
 
 `websockets` distinguishes binary and text frames natively — no framing code required.

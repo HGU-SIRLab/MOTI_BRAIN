@@ -17,6 +17,7 @@ import json
 import re
 import time
 import urllib.request
+import uuid
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,21 +69,26 @@ _BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:")
 
 
 def _parse_call(body: str) -> dict | None:
-    """`call:set_emotion{emotion:<|"|>sad<|"|>}` -> {name, arguments}."""
+    """`call:set_emotion{emotion:<|"|>sad<|"|>}` -> {id, name, args}.
+
+    `args` is a dict, not a JSON string, and the field is named `args` — both because
+    §11.5 says so and because `launcher.py` splats it: `fn(**(fc.args or {}))`.
+    """
     body = body.strip()
     if not body.startswith("call:"):
         return None
     head, brace, rest = body[5:].partition("{")
+    call = {"id": uuid.uuid4().hex[:8], "name": head.strip(), "args": {}}
     if not brace:
-        return {"id": "", "name": head.strip(), "arguments": "{}"}
-    args = "{" + rest.rsplit("}", 1)[0] + "}"
-    args = args.replace('<|"|>', '"')
-    args = _BARE_KEY.sub(r'\1"\2":', args)          # {emotion:"sad"} is not valid JSON
+        return call
+    raw = "{" + rest.rsplit("}", 1)[0] + "}"
+    raw = raw.replace('<|"|>', '"')
+    raw = _BARE_KEY.sub(r'\1"\2":', raw)            # {emotion:"sad"} is not valid JSON
     try:
-        json.loads(args)
+        call["args"] = json.loads(raw)
     except json.JSONDecodeError:
-        args = "{}"                                  # never crash the turn over markup
-    return {"id": "", "name": head.strip(), "arguments": args}
+        pass                                         # never crash the turn over markup
+    return call
 
 
 def _find_bare_call(buf: str, names: tuple[str, ...]) -> tuple[int, int, dict] | None:

@@ -75,7 +75,7 @@ async def main(stem: str = "a1_tired", barge_with: str | None = None) -> None:
                     # The robot is where tools actually run (§1). Pretend, and report back.
                     results = []
                     for c in m["calls"]:
-                        print(f"  tool   {c['name']}({c['arguments']}) -> ok")
+                        print(f"  tool   {c['name']}({c['args']}) -> ok")
                         results.append({"id": c.get("id", ""), "name": c["name"],
                                         "result": "ok"})
                     await ws.send(json.dumps({"t": "tool_result", "results": results}))
