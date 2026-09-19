@@ -1275,15 +1275,21 @@ Found while re-running EXP-8, which sat for 27 minutes producing nothing. Both c
 keeping because neither announces itself.
 
 **The vLLM side.** The engine died mid-run with
-`AssertionError: Expected a cached item for mm_hash=...` and returned HTTP 500. The trigger is our own
-design: §12.6 has the reply call and the transcription call carry the **same audio**, deliberately, so
-they share a prefix-cache entry. §13.2 then made them run **concurrently**. Two in-flight requests with
-an identical `mm_hash` race in vLLM's multimodal processor cache. Fixed with
-`--mm-processor-cache-gb 0`, which costs re-deriving audio features twice per turn — cheap, and
-unrelated to prefix caching, which is what the shared-prefix optimization actually relies on.
+`AssertionError: Expected a cached item for mm_hash=...` and returned HTTP 500. Fixed with
+`--mm-processor-cache-gb 0`.
 
-Note the shape of this: the two optimizations are individually correct and interact badly. Serializing
-the calls would also fix it and was rejected — that is the change §13.2 measured at 2.7× on first audio.
+⚠️ **The mechanism is a hypothesis, not a measurement — this was first written as though it were
+established.** What is certain: our design has the reply call and the transcription call carry the
+**same audio** (§12.6, deliberately, to share a prefix-cache entry) and run **concurrently** (§13.2), so
+two in-flight requests hold an identical `mm_hash`. What is *not* established is that they race. An
+`Expected a cached item` assertion fits **eviction** at least as well — an entry dropped while a queued
+request still referenced it — and EXP-8 walks 8 distinct audio clips through that cache twice each.
+Both readings are fixed by turning the cache off, so the distinction was never worth a 29-minute
+restart to settle; it is only worth not asserting.
+
+Note the shape of it either way: the two optimizations are individually correct and interact badly.
+Serializing the calls would also fix it and was rejected — that is the change §13.2 measured at 2.7×
+on first audio.
 
 **The client side, and this one is worse.** `client/local_live.py` handled `{"t":"error"}` with
 `continue`. The brain reported the failure correctly; the shim swallowed it and waited for a
@@ -1317,7 +1323,36 @@ reply is still decoding.
 **Not measured, and deliberately so.** Isolating it needs a 29-minute restart, and the result could not
 change anything: the cache cannot be left on — it crashes the engine. The real alternative is serializing
 the two calls, which §13.2 measured at 3.96s vs 1.47s to first audio. Paying ~0.2s to keep 2.4s is not a
-close decision. Revisit only if a rebuilt image (§13.6) fixes the cache race itself.
+close decision. Revisit only if a rebuilt image (§13.6) fixes the cache behaviour itself.
+
+### 13.8 `[MEASURED]` Did the EXP-3 restore cause either bug? No — and that is the uncomfortable part
+
+Asked directly, checked in git rather than reasoned about.
+
+| claim | evidence |
+|---|---|
+| The EXP-3 revert restored the serving config faithfully | `diff` of `run_vllm.sh` at 5a479f0 (pre-EXP-3) vs 6f1c691 (post-revert): **comments only**, `docker run` arguments byte-identical |
+| The shim bug predates the restore by six hours | `git log -S` puts `elif kind == "error": continue` in 76dfc89 (10:14), the shim's **first** commit. The restore was 15:15 |
+| No Python changed between the last clean EXP-8 and the crash | `git diff --stat 6963254 adc7ca5~1` → `CLAUDE.md`, a new doc, and `run_vllm.sh` comments. **Zero lines of code** |
+
+So neither bug was introduced. Both were **latent**, and each needed a condition that had never occurred:
+
+- The shim bug needed the brain to fail a turn. In six hours of testing the brain had never failed one,
+  so the handler that dropped the failure was never exercised.
+- The crash needed whatever engine-internal state a fresh vLLM process happened to reach. Same code,
+  same flags, clean at 14:43 and crashing at 16:15 — the only variable is that the engine was restarted
+  twice in between.
+
+**The lesson is about the test suite, not the restore.** A failure path with no test is not "probably
+fine", it is untested, and it stays green for exactly as long as nothing fails upstream. The crash was
+the first real backend failure this project ever had, and it immediately found the one path that had
+never run. `client/test_error_path.py` now closes it: it drives a brain error through the shim and fails
+if `receive()` does not terminate.
+
+Worth recording precisely because it is counter-intuitive: that test file also contains a **structural**
+check (every `send(t=...)` kind in the brain is matched by a `kind == ...` in the shim), and **that check
+does not catch this bug** — the `error` branch existed, it just did the wrong thing. Only executing the
+path catches it. Coverage of the message table is not coverage of the behaviour.
 
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
