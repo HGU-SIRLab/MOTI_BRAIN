@@ -385,5 +385,9 @@ class Turn:
         if "first_audio" not in self.marks:
             self.marks["first_audio"] = time.perf_counter() - t0
         self.spoke = True
-        await emit("transcript", {"role": "model", "text": sentence})
+        # Trailing space matters: launcher.py concatenates output_transcription chunks
+        # with "".join(), so without it the saved conversation log — and the 마음처방전
+        # built from it — reads "힘드셨겠어요.눈이 감기실". Gemini's partial chunks carry
+        # their own spacing; ours are whole sentences.
+        await emit("transcript", {"role": "model", "text": sentence + " "})
         await emit("audio", {"pcm": pcm, "rate": self.tts.rate})
