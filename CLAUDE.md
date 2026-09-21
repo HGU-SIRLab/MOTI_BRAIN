@@ -799,6 +799,55 @@ drop. The model answered "밤을 새워서 피곤하다는 내용이었죠" — 
 
 ---
 
+### 11.6 `[MANDATORY]` Which side owns the bug — diagnose before editing either
+
+Two Claude Code instances now work on this system: one on the AGX (this repo, the brain) and one on
+the robot (`MOTI-HRI`). **Neither may edit the other side's code.** Added 2026-09-21 after the
+robot-side instance began editing `client/local_live.py` in place — an understandable move that was
+wrong for a reason worth writing down: that file *runs* on the robot but is *owned* here, and the
+eight-test suite that covers it runs here too. A fix made there is untested, diverges from the repo,
+and is destroyed by the next `scp` the integration doc instructs.
+
+**Ownership is not negotiable per-bug:**
+
+| file / concern | owner | the other side does what |
+|---|---|---|
+| `brain/`, `client/local_live.py`, `scripts/`, this spec | **brain (AGX)** | reports the symptom |
+| `launcher.py`, `core/`, `media/`, robot `.env`, AEC, motors, camera | **robot** | reports the symptom |
+
+`client/local_live.py` is the trap: it is deployed to the robot but belongs to this repo. Fixes go in
+here, get tested here, get pushed, and the robot re-copies. Never the reverse.
+
+#### The brain log is the arbiter
+
+Most cases resolve mechanically rather than by judgement. **Did the brain log say it sent the thing?**
+If yes, the fault is downstream (robot). If no, upstream (brain).
+
+| symptom | side | why it is decided, not guessed |
+|---|---|---|
+| `client silent Ns — closing turn anyway` | **robot** | the brain stopped *receiving* audio. Nothing the brain does can cause that |
+| `barge-in: turn cancelled` repeating while the user is silent | **robot** | echo re-entering the mic — AEC (§18.1) |
+| `turn failed` + traceback | **brain** | an exception in our pipeline |
+| tool markup spoken aloud | **brain** | `strip_tool_calls` (§13.9) |
+| turn cut mid-sentence, or waits too long | **brain** | VAD thresholds (§9.1e) |
+| speech ~9% fast and high-pitched | **brain** first (resample), then robot if `OUTPUT_RATE` was changed |
+| tools never execute | brain log has `tool_call`? **yes → robot**; **no → brain** |
+| user transcript missing from the saved log | brain log has `transcript role=user`? **yes → robot**; **no → brain** |
+| robot hangs with no error anywhere | did the brain send `turn_complete` or `error`? **yes → robot**; **no → brain** (§13.7) |
+
+#### When it is not clear: change nothing, ask
+
+If the table does not decide it, **neither side edits anything.** Report to the user with:
+1. the exact symptom (traceback verbatim, or the brain-log lines with timestamps),
+2. what was already ruled out and how,
+3. the one or two hypotheses, and which side each would live on.
+
+The user routes it to the right side. A speculative fix on the wrong side is worse than waiting: it
+adds an untested change to a system where, as of 2026-09-21, **nothing has been verified against real
+hardware** — so a second variable makes the first one unfindable.
+
+---
+
 ## 12. EXPERIMENTS — THE ACTUAL DELIVERABLE
 
 No public data exists for any of these on this hardware in Korean.
@@ -1704,6 +1753,7 @@ of it exists on this particular Orin Nano is what the command above settles.
 18. **The brain holds conversation state server-side** and resumes it across reconnects (§11.5). A dropped link must not lose the conversation.
 19. **Re-read the status tables (§14, §19) whenever a §9/§13 measurement lands** — not when a feature is added. They are claims about the present, not a log, and they go stale silently because nothing fails when they do. Four occurrences by 2026-09-19: §14's barge-in / rhythm / latency rows, §12.6's prompt-ordering rationale, §11.1's raw-PCM rule, §5.4 rule 5. Each was invalidated by a *later fix being correct*, which is exactly why no test caught it.
 20. **A benchmark or test config that is easier than production does not just give optimistic numbers — it deletes whole code paths from the test.** `fake_robot` and EXP-8 used a ~50-token persona with **no tools**, so the ~60 lines of tool parsing never ran against a declared tool name. Switching to the real 18,344-token persona surfaced four markup shapes that would all have been spoken aloud, plus a latent `_holdback` bug with no connection to personas at all (§13.9). Before trusting a measurement, ask what the real client sends; **making a test condition realistic finds more than adding a new test does.**
+21. **Diagnose which side owns a bug before editing anything, and when it is unclear, edit nothing and ask** (§11.6). The brain and the robot are worked on by separate agents; neither edits the other's code, and `client/local_live.py` belongs to this repo even though it runs on the robot. The brain log usually decides it mechanically: if the brain logged sending something, the fault is downstream.
 
 ---
 
