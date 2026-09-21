@@ -1,25 +1,28 @@
-"""smart-turn-v3 — preprocessing now PROVEN CORRECT, but still NOT WIRED IN.
+"""smart-turn-v3 — wired in and load-bearing (§9.1e).
 
-Status (2026-09-19). Two real bugs were found and fixed by diffing against the reference
+🔄 *Corrected 2026-09-21.* This docstring said "PROVEN CORRECT, but still NOT WIRED IN"
+for two days after it stopped being true. Q19b resolved it on 2026-09-19 and the model has
+been in the turn-detection path ever since; the header was written when it was not, and
+nothing failed when it went stale. Exactly what §20 rule 19 is about.
+
+**How it is used now**: asked twice per pause, for opposite purposes.
+  fast path  — 0.6s into the pause, >= 0.95 ends the turn immediately
+  veto       — when the 1.5s timer expires, < 0.7 extends the wait to 4.0s max
+Together: 3 wrong splits over six spontaneous recordings against 19 for the plain timer,
+at the same 0.77s wait. `fast_confidence = 0.99` disables the fast path in one line.
+
+**Two bugs were fixed to get here**, both found by diffing against the reference
 (pipecat-ai/smart-turn `inference.py`):
   1. missing `do_normalize` — zero-mean/unit-variance on the waveform before the mel
   2. a sigmoid applied to an output that is *already* a probability despite being named
-     `logits`. That squashed everything into 0.50–0.73 = sigmoid(0)–sigmoid(1); the model
+     `logits`. That squashed everything into 0.50-0.73 = sigmoid(0)-sigmoid(1); the model
      had been answering 0.0 and 1.0 the whole time.
-
-`log_mel()` now matches `WhisperFeatureExtractor(chunk_length=8, do_normalize=True)`
+`log_mel()` matches `WhisperFeatureExtractor(chunk_length=8, do_normalize=True)`
 **exactly** — max absolute error 0.0000 across all 80x800 values, filterbank identical.
-So the features are right and the earlier "the mel is wrong" conclusion was itself wrong.
 
-Why it is still not wired in: on our five recordings it separates finished from mid-word
-speech only 2/5, and in the wrong direction on a1_tired. Published accuracy on Korean is
-96.96% (best of 23 languages), so the fault is most likely the test material — these are
-scripted lines read aloud by one speaker, and the model is trained on natural
-conversational audio. Validating it needs spontaneous conversational recordings.
-
-**Do not enable on these numbers.** The dangerous direction is present: a mid-word cut
-scored 0.893 on a1_tired, and acting on that would cut a user off mid-sentence. Worth
-~1.3s of every turn (§13.4), so this is the top open item — but it needs data, not code.
+**The methodology lesson outlived the bugs.** It scored 2/5 on scripted recordings and
+that was read as "the model is broken". It was the test material: read speech does not
+carry turn-final prosody. On spontaneous audio the separation is 0.019 vs 0.880.
 
 Original intent below. ------------------------------------------------------------
 
