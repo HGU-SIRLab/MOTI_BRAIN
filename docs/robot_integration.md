@@ -143,31 +143,25 @@ AGX에서: `tail -f /home/herobot/moti_brain/logs/brain.log`
 
 ---
 
-## 0. 🔴 AEC 확인 — 다른 무엇보다 먼저
+## 0. ✅ AEC — 해결됨 (2026-09-21 실물 확인)
+
+**이 로봇의 AEC는 PulseAudio `module-echo-cancel`(webrtc)이 담당한다.** 기본 sink/source가
+`echocancel_*`이고 재부팅해도 살아남는 것을 확인했다. 실물 세션 전체에서 **에코성 barge-in
+오탐 0건**이었다.
+
+`aec_audio_processing` 휠은 여전히 없고, 그래서 **`.env`의 `ENABLE_AEC=false`가 맞다** —
+앱 레벨 AEC를 일부러 끄고 한 단계 아래에서 처리하는 구성이다. (이 문서의 이전 판본은
+"`ENABLE_AEC=false`면 AEC가 없다"고 경고했는데, 이 구성에는 해당하지 않는다.)
+
+확인만 하고 싶으면:
 
 ```bash
-python3 -c "import aec_audio_processing; print('AEC 휠 있음')"   # 로봇에서
+pactl info | grep -i "Default S"      # echocancel_* 이어야 한다
 ```
 
-**에러가 나면 `.env`에 무엇을 적어두었든 AEC는 꺼진 상태다.**
-
-`media/audio_manager.py:25-32`가 모듈 로드 시점에 이 import를 미리 해보고, 실패하면 경고
-한 줄만 출력하고 `ENABLE_AEC = False`로 바꾼 뒤 그냥 진행한다(2026-08-24 Jetson 이식 때
-추가 — 그 전에는 로봇이 기동 중에 죽었다). 그리고 `requirements-jetson.txt:121`은 바로 그
-패키지에 대해 *"Linux 휠이 아예 없음(재확인)"*이라고 적고 있다.
-
-즉 **부팅 때 경고 한 줄이 스크롤로 지나가고, 로봇은 멀쩡히 돌고, 에코 캔슬만 없다.**
-이후에 아무것도 이걸 알려주지 않는다.
-
-우리에게는 이것이 Gemini를 쓸 때보다 나쁘다:
-- 우리 barge-in은 **0.07초**다. 아주 작은 발화 시작에도 반응하도록 만들어져 있고,
-  새어 들어온 스피커 소리가 정확히 그렇게 생겼다
-- 턴 감지가 우리 쪽으로 넘어왔다. 예전엔 에코 오탐이 구글 문제였지만 이제 에코 프레임이
-  전부 우리 Silero VAD로 들어온다
-- `AEC_STREAM_DELAY_MS` 기본값 100ms는 **실측된 값이 아니라고 코드 주석이 직접 말한다**
-
-휠이 없으면 임시로 **이어폰**을 꽂아 에코 경로를 끊고 나머지를 먼저 검증한다. AEC는 별도
-과제로 분리하고, 확인 결과는 로봇 저장소 문서에 반영한다(=스펙 Q16).
+남겨둘 주의사항 하나: `media/audio_manager.py:25-32`의 조용한 자동 비활성화 경로는 아직
+있다. 지금은 어차피 꺼두는 게 맞아서 무해하지만, 나중에 누군가 `ENABLE_AEC=true`로 되돌리면
+휠이 없다는 사실이 경고 한 줄로만 지나가고 묻힌다.
 
 ---
 

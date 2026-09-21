@@ -1441,8 +1441,20 @@ It found three things, and two of them would have reached the user as sound.
 | **real persona + tools** | **2.65s** | **5.10s** | 1.42s |
 
 Consistent with §13.0's 13.2 tok/s under the real persona against 14.4 with a short prompt. The floor is
-unchanged — short turns still answer in 1.42s — but the mean and the tail both stretch. **2.65s is the
-number to quote for the robot.**
+unchanged — short turns still answer in 1.42s — but the mean and the tail both stretch.
+
+⚠️ **Amended 2026-09-21: this metric is far noisier than any single figure suggests.** Four runs of the
+same eight clips, same config, same server: **2.65 / 2.53 / 4.73 / 3.63s**. The floor is rock steady at
+1.42s every time and two clips always land there, while the same three clips swing between 2 and 7.7s.
+The driver is visible in the replies — first audio waits for the first *sentence*, and at temperature
+0.7 the model sometimes opens with a short one and sometimes with a long one. Nothing about the
+pipeline changed between those runs.
+
+So: **quote a range, not a point — roughly 2.5–4.7s, and the fast path is 1.4s.** An n=8 run cannot
+detect a change smaller than about 2s, which means it could not have told us whether §13.11's barge-in
+fix cost anything. If a latency change ever needs to be *proven*, instrument `first_token` separately
+from `first_audio` (both already live in `turn.marks`) — the first should be stable and would isolate
+generation length from everything else.
 
 **2. The first turn of a fresh brain costs 14.17s.** Measured, once, before the persona entered the
 prefix cache. §13.1 documents pre-warming as the fix and tags it `[MEASURED]`, but **no code does it** —
@@ -1501,6 +1513,48 @@ degradation could not be distinguished from ordinary variance. **Quantize after 
 Deferred, not cancelled. Revisit when (a) a quality baseline exists and (b) live use shows decode speed
 is actually the dominant complaint — which §13.9's 2.65s suggests but has never been confirmed with a
 person in front of the robot.
+
+### 13.11 🔴 `[MEASURED]` Barge-in did nothing on the real robot — the fake one never played audio
+
+First live session (2026-09-21, 2.5 minutes, reported from the robot side). Everything completed:
+handshake, ten tools, greeting, tool round trips, conversation log, clean shutdown. No `WARNING`, no
+`turn failed`, no echo-induced false barge-in. And **barge-in never fired once** — the user said so out
+loud during the session and the model transcribed the complaint.
+
+The robot side ruled itself out mechanically before reporting, which is what §11.6 asks for:
+`send_loop()` streams unconditionally and both of its gates (quiz, SLEEPY RMS) were inactive; and
+decisively, **speech spoken over the reply reached the brain and was transcribed correctly** — so the
+audio path was fine and PulseAudio AEC was not over-suppressing either.
+
+**The cause is here.** Barge-in was keyed on `self.current`:
+
+```python
+turn = self.current
+if turn is not None and not turn.cancelled and self.detector.speech_run >= BARGE_WINDOWS:
+```
+
+A turn ends when the last audio chunk has been **sent**, not when it has been **heard**. The brain
+streams ~14s of speech down the socket in ~2s, so for the remaining ~12s — the part the user actually
+listens to, and therefore the only part they can interrupt — there is no turn object and the condition
+is dead. The interrupting speech became a *new turn* instead, which the log shows plainly: three
+`speculating on …` lines in the seconds after `speculation adopted`, and zero cancellations.
+
+**Fix**: track when the robot will run out of audio. `emit()` already funnels every reply chunk, so it
+accumulates `_playing_until = max(_playing_until, now) + chunk_duration`, and barge-in now fires either
+when a turn is live (as before) or when the robot is still playing. In the second case there is nothing
+to cancel — the work is done — so it only sends `interrupted`, which is precisely what tells the robot
+to drop its buffer (§11.0-1). Backchannels are excluded from the accounting: they fire *during* the
+user's pause, and counting them would make the user's own continued speech look like an interruption.
+
+**Why no test caught it**: `fake_robot.py` consumes audio as fast as the socket delivers it. Real-time
+playback — and therefore this twelve-second window — has never existed in any test we wrote.
+`client/test_barge_in_playing.py` now waits out the audio it received before cutting in. It fails
+against the old code and reports **0.10s** against the new.
+
+Third instance of the same lesson, now with the sharpest example: §13.9 was a test config easier than
+production, this is a test *client* easier than production. The `[MEASURED]` 0.07s in §13.3 was never
+wrong — it measured interrupting the brain mid-generation, which is a different and much rarer moment
+than interrupting the robot mid-sentence.
 
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
@@ -1661,7 +1715,7 @@ starting the next; do not run parallel blockers just to save days we do not need
 | **Tone-driven fabrication** | 🟡 **MED — new in v6** | §12.4: on a bright-toned reading the model invented a situation that was never said. Prosody sensitivity cuts both ways. Watch in live use; the text-only path does not have this failure mode. |
 | Latency above target | 🟡 MED | E4B → MTP → QAT → shorter context → E2B. New v6 contributors: voice-shift buffer (§13) and, in phase 2, Tailscale relay fallback. |
 | **Tailscale falls back to DERP relay (phase 2)** | 🟡 **MED — new in v6** | Relayed WireGuard adds unpredictable latency, which lands directly in the voice loop. Require a **direct** connection (`tailscale status` shows `direct`, not `relay`) and treat relayed operation as a degraded mode. |
-| Missing AEC breaks barge-in | 🔴 **HIGH — raised 2026-09-19 after reading the robot's code** | See below. Was MED on the user's statement that it is solved on the Orin Nano; the code says that statement needs checking before it is relied on. |
+| Missing AEC breaks barge-in | ✅ **Closed 2026-09-21 on the real robot** | The mechanism is **PulseAudio `module-echo-cancel`** (webrtc), not the Python wheel. Verified working and reboot-surviving on the Orin Nano; a whole live session produced **zero** echo-induced barge-ins. §18.1 keeps the reasoning because the wheel-based path is still absent and would silently disable AEC if anyone ever re-enabled `ENABLE_AEC`. **Q16 answered.** |
 | CMA fragmentation | 🟢 LOW | Never touch `cma=`; reboot if hit |
 
 ### 18.1 🔴 AEC — the robot disables it silently, and our barge-in is 5× more aggressive than Gemini's
@@ -1689,14 +1743,18 @@ Three things make this worse for us specifically than it was for Gemini:
    problem; now every echo frame reaches our Silero VAD.
 3. `AEC_STREAM_DELAY_MS` defaults to 100 and its own comment says it is **not measured**.
 
-`[MANDATORY]` **Before the first real session, confirm which path is live** — not from memory:
-```bash
-python3 -c "import aec_audio_processing; print('AEC 휠 있음')"   # on the robot
-```
-If that raises, AEC is off regardless of `.env`, and §9.2's mitigations (headset to isolate, or lower
-speaker volume / separate mic) apply until it is fixed. This also finally answers **Q16**: the mechanism
-is the `aec_audio_processing` wheel, the repo documents it as unavailable on aarch64, and whether a build
-of it exists on this particular Orin Nano is what the command above settles.
+✅ **Resolved 2026-09-21 — and the answer was not the one this section assumed.** The wheel really is
+absent and `ENABLE_AEC=false` really is correct on this robot, but AEC is **not** off: it runs one layer
+down, as **PulseAudio `module-echo-cancel`** (webrtc) with the default sink and source set to
+`echocancel_*`. That configuration survives reboot, and a full live session logged **zero** echo-induced
+barge-ins. **Q16 is answered**: the mechanism is PulseAudio, not the Python binding.
+
+Two things to keep from the original worry:
+- The silent-disable path in `audio_manager.py:25-32` is still there. It is harmless while the app-level
+  AEC is deliberately off, but it would hide a real failure if anyone ever set `ENABLE_AEC=true` again.
+- PulseAudio AEC also **did not over-suppress**: during a reply the robot was still playing, the user
+  spoke over it, and the brain transcribed that speech correctly. Doubletalk suppression was ruled out
+  as a cause of the barge-in failure, which is how §13.11 ended up looking at the brain instead.
 | ~~Piper GPL contamination~~ | ✅ **Closed in v6** | Research-only use (§1, §15). Keep the §20 rule 7 flag for a future release decision. |
 
 ---
@@ -1727,7 +1785,7 @@ of it exists on this particular Orin Nano is what the command above settles.
 | **Q17** | Why does vLLM's "model loading" stage take 1,674s (28 min) when weights read in 3.8s? | Unexplained. Mitigation is to not restart the server (§1 always-on). |
 | ~~Q14~~ | ~~Reproduce the young voice, or drop the pitch shift?~~ | ✅ **Resolved 2026-09-19: Piper's voice as-is, no pitch shift. `ENABLE_VOICE_SHIFT=false` (§8.3)** |
 | **Q15** | Does Tailscale hold a `direct` connection in practice, and what does it add to EXP-8? | Stage 6 |
-| **Q16** | How was AEC actually solved on the Orin Nano, and is that recorded anywhere? | Robot repo's docs are stale (§18) — update them there |
+| ~~Q16~~ | ~~How was AEC actually solved on the Orin Nano?~~ | ✅ **Resolved 2026-09-21 on the robot: PulseAudio `module-echo-cancel` (webrtc), default sink/source `echocancel_*`, survives reboot.** Not the Python wheel — that is still absent, so `ENABLE_AEC=false` is correct here. Zero echo-induced barge-ins in a live session, and no doubletalk over-suppression either (§18.1). The robot repo's docs should be updated to say this. |
 
 ---
 

@@ -157,21 +157,44 @@ class Session:
         reconfigure rather than assume."""
         return self._pending_rate
 
+    async def _send(self, payload) -> None:
+        """Send, and make a connection that died while idle look like what launcher
+        already handles.
+
+        Reported from the real robot 2026-09-21: after 40s of silence (SLEEPY stops the
+        mic stream) and a wake-up, the next outgoing chunk hit a transport whose loop was
+        already cleared and raised `AttributeError: 'NoneType' object has no attribute
+        'call_soon'`. That is not `ConnectionClosed`, so `launcher.py`'s
+        `connection_manager()` reconnect path never saw it and the whole robot process
+        died. Translating here keeps the robot's own code untouched (§20 rule 17) and
+        turns a crash into the reconnect it was always supposed to be — the brain holds
+        the conversation and resumes it (§11.5).
+        """
+        try:
+            await self._ws.send(payload)
+        except asyncio.CancelledError:
+            raise
+        except websockets.ConnectionClosed:
+            raise
+        except Exception as exc:                      # noqa: BLE001 — see docstring
+            self.last_error = f"send failed: {exc!r}"
+            raise websockets.exceptions.ConnectionClosedError(None, None) from exc
+
     async def send_realtime_input(self, audio) -> None:
-        await self._ws.send(audio.data)
+        await self._send(audio.data)
 
     async def send_client_content(self, turns=None, turn_complete=True) -> None:
         text = ""
         for part in getattr(turns, "parts", None) or []:
             text += getattr(part, "text", "") or ""
-        await self._ws.send(json.dumps({"t": "text", "text": text},
+        await self._send(json.dumps({"t": "text", "text": text},
                                        ensure_ascii=False))
 
     async def send_tool_response(self, function_responses=None) -> None:
         results = [{"id": getattr(r, "id", ""), "name": getattr(r, "name", ""),
                     "result": (getattr(r, "response", None) or {}).get("result")}
                    for r in function_responses or []]
-        await self._ws.send(json.dumps({"t": "tool_result", "results": results},
+        await self._send(json.dumps({"t": "tool_result", "results": results},
                                        ensure_ascii=False))
 
     async def receive(self):

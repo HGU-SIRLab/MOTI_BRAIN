@@ -53,6 +53,14 @@ SPECULATE_AFTER = 0.2
 # open forever. launcher.py can do exactly that — its RMS gate suppresses silent audio
 # while the robot is "asleep" to avoid paying Gemini for it. Wall-clock backstop.
 STALL_TIMEOUT = 6.0
+# Added to our estimate of when the robot finishes playing (see `_playing_until`). The
+# robot starts late on purpose — its jitter buffer primes for `PLAYOUT_PRIME_MS` (600 on
+# this unit) before the first sample — and it drifts later on any underrun (one of 102ms
+# in the first live session). Without slack the estimate runs ahead of reality and
+# barge-in dies again in the last second of every reply, which is a likely moment to
+# interrupt. Overshooting instead costs a spurious `interrupted` that flushes an already
+# empty buffer, so the error is worth taking in this direction.
+PLAYBACK_SLACK = 1.0
 
 log = logging.getLogger("brain")
 
@@ -83,6 +91,15 @@ class Connection:
         self._spec_out: list[tuple[str, dict]] = []
         self._spec_live = False             # confirmed: stop buffering, stream instead
         self._last_audio = 0.0
+        # When the robot should finish playing what we have already sent. The brain
+        # streams a reply far faster than real time — ~14s of speech leaves here in ~2s —
+        # so `self.current` goes None while the robot is still talking. Barge-in keyed on
+        # `current` alone therefore does nothing for most of the time the user can
+        # actually hear Moti (2026-09-21, real robot: zero cancellations in a whole
+        # session, the user complained about it out loud and the model transcribed it).
+        # The fake robot never played audio in real time, so this window did not exist in
+        # any test. Loop time, comparable with `asyncio.get_running_loop().time()`.
+        self._playing_until = 0.0
         self.detector = TurnDetector()
         self.session: Session | None = None
         self.turns: asyncio.Queue = asyncio.Queue()
@@ -100,9 +117,19 @@ class Connection:
             # client must be told, not assume. `kind` separates a real reply from an
             # EXP-12 acknowledgement — the robot should not log "응" as something Moti
             # said, and may want to duck it differently.
+            kind_ = payload.get("kind", "reply")
             await self.send(t="audio", rate=payload["rate"], bytes=len(payload["pcm"]),
-                            kind=payload.get("kind", "reply"))
+                            kind=kind_)
             await self.ws.send(payload["pcm"])
+            if kind_ == "reply":
+                # Track when the robot will run out of audio, so barge-in keeps working
+                # after we stop sending (see `_playing_until`). Backchannels are excluded:
+                # they fire *during* the user's pause, and counting them would make the
+                # user's own continued speech look like an interruption.
+                now = asyncio.get_running_loop().time()
+                secs = len(payload["pcm"]) / 2 / payload["rate"]
+                base = max(self._playing_until - PLAYBACK_SLACK, now)
+                self._playing_until = base + secs + PLAYBACK_SLACK
         elif kind == "transcript":
             await self.send(t="transcript", role=payload["role"], text=payload["text"])
         elif kind == "tool_call":
@@ -182,11 +209,25 @@ class Connection:
         # back through the mic and interrupts her mid-sentence; the robot repo logged
         # exactly that symptom before AEC was in place (§18).
         turn = self.current
-        if turn is not None and not turn.cancelled \
-                and self.detector.speech_run >= BARGE_WINDOWS:
+        speaking = self.detector.speech_run >= BARGE_WINDOWS
+        # Two ways Moti can be talking when the user cuts in, and only the first one used
+        # to count. The second is the common one on a real robot: we finished *sending*
+        # seconds ago and the robot is still *playing* (see `_playing_until`).
+        still_playing = (self._playing_until
+                         > asyncio.get_running_loop().time())
+        if speaking and turn is not None and not turn.cancelled:
             turn.cancel()
+            self._playing_until = 0.0
             await self.send(t="interrupted")
             log.info("barge-in: turn cancelled")
+        elif speaking and still_playing:
+            # Nothing left to cancel here — the work is done and the bytes are gone. The
+            # robot still has to drop what is in its buffer, which is exactly what
+            # `interrupted` tells it to do (§11.0-1). Clearing the deadline also stops
+            # this from firing again for the same interruption.
+            self._playing_until = 0.0
+            await self.send(t="interrupted")
+            log.info("barge-in: robot still playing, told it to flush")
 
         # EXP-12: the user has stopped but the VAD is not yet sure. Rather than 1.5s of
         # dead air, acknowledge. This does not make the reply arrive sooner — it stops the
@@ -354,7 +395,15 @@ async def handle(ws, tts: Tts, backchannel: Backchannel) -> None:
     finally:
         worker.cancel()
         watchdog.cancel()
-        log.info("robot disconnected")
+        # Say *why*. The robot reported a connection dying during a 40s SLEEPY idle
+        # (2026-09-21) and we could not tell from here whether we had dropped it. There
+        # is no idle timeout in this server, but `websockets.serve` keepalive is on by
+        # default (ping every 20s, close if no pong within 20s) — so a robot that blocks
+        # its event loop for 20s+ will be disconnected by us and this line is what will
+        # show it: code 1011 / "keepalive ping timeout".
+        close = getattr(ws, "close_code", None)
+        reason = (getattr(ws, "close_reason", "") or "").strip()
+        log.info("robot disconnected (code=%s%s)", close, f", {reason}" if reason else "")
 
 
 async def main() -> None:

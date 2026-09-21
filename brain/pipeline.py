@@ -302,9 +302,10 @@ class Session:
                 {"role": "user", "content": parts}]
 
     def _post(self, parts: list, *, stream: bool, max_tokens: int,
-              with_tools: bool, system: str | None = None) -> urllib.request.Request:
+              with_tools: bool, system: str | None = None,
+              temperature: float = 0.7) -> urllib.request.Request:
         body = {"model": MODEL, "messages": self._messages(parts, system),
-                "temperature": 0.7, "max_tokens": max_tokens, "stream": stream}
+                "temperature": temperature, "max_tokens": max_tokens, "stream": stream}
         if stream:
             body["stream_options"] = {"include_usage": True}
         if with_tools and self.tools:
@@ -325,6 +326,13 @@ class Session:
         req = self._post(parts + [{"type": "text",
                                    "text": "이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마."}],
                          stream=False, max_tokens=256, with_tools=False,
+                         # Greedy. 0.7 was applied to every call including this one, which
+                         # is sampling noise added to a task that has one right answer —
+                         # and EXP-13 measured "character-for-character exact" at
+                         # temperature 0 (§12.4), so production was never running what was
+                         # validated. Found after the robot transcribed 조형민 as 조효형민
+                         # and stored the wrong name via remember_fact (2026-09-21).
+                         temperature=0.0,
                          system="오디오를 듣고 발화 내용을 그대로 받아적는 전사기다. 다른 말은 하지 않는다.")
         with urllib.request.urlopen(req) as r:
             return (json.load(r)["choices"][0]["message"].get("content") or "").strip()
