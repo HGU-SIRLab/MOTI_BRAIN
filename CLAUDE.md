@@ -1695,6 +1695,41 @@ on the last sentence boundary before it, and a truncated description ends in `[�
 see it happened. **A truncation the reader cannot detect is worse than a shorter description** — and
 note that this was a bug *introduced by the previous fix*, found in one session.
 
+### 13.15 🔴 `[MEASURED]` The brain sent the robot's own words back as the user's (2026-09-22)
+
+Reported from the robot with the acoustics already ruled out, which is the only reason it was found.
+In sessions where the privacy notice was injected, `launcher.py` logged the robot's own sentence as
+something the **user** said — and wrote it into `user_result/*/대화.txt`. Research data, corrupted.
+
+**Why it looked like echo and was not.** The robot measured AEC residue (median chunk RMS 101 during
+playback against 61 in a quiet room) and made three arguments, all correct:
+1. the "echo" transcribed *better* than the user's real speech in the same session — impossible for
+   acoustic leakage;
+2. the string matched `core/trust_notice.py`'s constant character for character;
+3. the measured residue could not support a transcription that clean.
+
+**Cause, reproduced here exactly.** `launcher.py:307 inject_turn()` sends the robot's line with
+`role="user"` — the only way to make Moti speak first against the Live API. `server.py` turns that into
+`turn.parts = [{"type": "text", …}]`, and `Turn.run()` handed those parts to `transcribe()`, whose
+prompt is *"이 오디오의 발화 내용만 그대로 받아적어"*. Given text instead of audio, the model politely
+echoed it back. Reproduction matched down to the `"(진행자 지시: …)"` prefix being dropped — the model
+read the bracketed instruction as meta and returned only the quoted sentence.
+
+**The transcription leg was written assuming audio always arrives.** It does not: injected turns are a
+first-class case (the greeting trigger uses the same path) and were never considered. This is §20 rule
+20 in a new shape — not a test easier than production, but *a code path production has and no test
+ever built*.
+
+**Fix**: an injected turn has no user speech, so there is nothing to transcribe. The brain skips the
+call entirely, keeps the injected text in conversation history (the model should know what it was
+answering), and emits **no** `input_transcription`. It also saves an LLM call per injected turn.
+
+`client/test_injected_turn.py` guards it, and fails against the old code.
+
+**Also fixed, from the same report**: the monitor now labels injected turns explicitly in its feed and
+marks user transcripts as `[마이크]`. The robot had to compare strings against a source constant to
+work out what they were looking at — that should have been visible at a glance.
+
 **Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
 ~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
 (0.209s warm); decode rate is, and the remaining lever there is prompt-side, not model-side.

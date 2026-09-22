@@ -135,7 +135,9 @@ class Connection:
                 base = max(self._playing_until - PLAYBACK_SLACK, now)
                 self._playing_until = base + secs + PLAYBACK_SLACK
         elif kind == "transcript":
-            monitor.publish("transcript", role=payload["role"], text=payload["text"])
+            # 여기 오는 role="user"는 이제 반드시 마이크 유래다 (주입 턴은 전사하지 않는다).
+            monitor.publish("transcript", role=payload["role"], text=payload["text"],
+                            source="mic" if payload["role"] == "user" else "tts")
             await self.send(t="transcript", role=payload["role"], text=payload["text"])
         elif kind == "tool_call":
             monitor.publish("tool_call", calls=payload["calls"])
@@ -147,8 +149,12 @@ class Connection:
     # ---- turn processing ------------------------------------------------
     async def run_turn(self, pcm: bytes | None = None, text: str | None = None) -> None:
         assert self.session is not None
+        # `injected`를 눈에 띄게 남긴다 — 2026-09-22에 주입 텍스트가 사용자 전사로 되돌아온
+        # 사고가 있었고, 로봇 쪽은 문자열을 상수와 대조해서야 알아챘다. 피드에서 바로
+        # 구분되면 그런 건 한눈에 잡힌다.
         monitor.publish("turn_start",
-                        secs=round(len(pcm or b"") / 2 / 16000, 2), injected=text is not None)
+                        secs=round(len(pcm or b"") / 2 / 16000, 2),
+                        injected=text is not None, text=text)
         turn = Turn(self.session, self.tts, pcm or b"")
         if text is not None:
             # An injected turn (the robot asking Moti to greet first) carries no audio.

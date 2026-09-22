@@ -53,6 +53,7 @@
   .tag.error, .tag.disconnect { color:var(--bad); }
   .tag.turn_start, .tag.turn_end { color:var(--accent); }
   .tag.connect, .tag.speculation, .tag.backchannel { color:var(--dim); }
+  .tag.injected { color:var(--warn); }
   .marks { color:var(--dim); }
   .marks b { color:var(--ink); }
   label.chk { color:var(--dim); font-size:12px; display:inline-flex; gap:5px; align-items:center; }
@@ -138,13 +139,19 @@ function row(ev) {
   switch (ev.kind) {
     case "transcript":
       tag = "transcript-" + ev.role;
-      body = (ev.role === "user" ? "🗣 " : "🤖 ") + esc(ev.text.trim());
+      body = (ev.role === "user" ? "🗣 [마이크] " : "🤖 ") + esc(ev.text.trim());
       break;
     case "tool_call":
       body = ev.calls.map(c => `${c.name}(${JSON.stringify(c.args)})`).join("  ");
       break;
     case "turn_start":
-      body = ev.injected ? "주입된 턴 (인사 트리거)" : `오디오 ${ev.secs}초`;
+      if (ev.injected) {
+        tag = "injected";
+        body = "🤖 로봇이 시킨 말 — 사용자 발화 아님: "
+             + esc((ev.text || "").slice(0, 120));
+      } else {
+        body = `오디오 ${ev.secs}초`;
+      }
       break;
     case "turn_end": {
       const m = ev.marks || {};

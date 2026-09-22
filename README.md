@@ -229,7 +229,7 @@ brain/                뇌 — AGX에서 돈다
 
 client/               로봇에 들어가는 것 + 실험 스크립트
   local_live.py       ★ Gemini Live 세션을 덕 타이핑하는 shim. 로봇으로 복사되는 유일한 파일
-  test_*.py           shim 검사 4종
+  test_*.py           shim 검사 6종
   exp8_latency.py     EXP-8 지연 분포 (--real 로 실제 페르소나)
   exp12_backchannel.py
 

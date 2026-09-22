@@ -425,11 +425,27 @@ class Turn:
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
 
+        # 🔴 An injected turn has no user speech in it, so there is nothing to transcribe.
+        # `launcher.py:307 inject_turn()` sends the robot's own text as `role="user"` —
+        # that is the only way to make Moti speak first against the Live API — and this
+        # code fed those text parts to `transcribe()`, whose prompt is "이 오디오의 발화
+        # 내용만 그대로 받아적어". Handed text instead of audio, the model politely echoed
+        # it, and the brain sent the robot's own privacy notice back as
+        # `input_transcription`. `launcher.py` logged it as the user speaking and wrote it
+        # into `user_result/*/대화.txt` — research data, corrupted (robot report,
+        # 2026-09-22; reproduced here exactly, down to the "(진행자 지시: …)" prefix being
+        # dropped because the model read it as meta).
+        #
+        # The transcription leg was written assuming audio always arrives. It does not.
+        injected = next((p["text"] for p in self.parts if p.get("type") == "text"
+                         and not any(q.get("type") == "input_audio" for q in self.parts)),
+                        None)
         # The user transcript is for the conversation log, not for the reply — blocking on
         # it before generating cost 2.4s of pure silence in the first measurement. Start it
         # alongside the reply and collect it before `done`, which is when launcher.py needs
         # it (it builds turn_user, then reads it at turn_complete).
-        transcript_task = loop.run_in_executor(None, self.session.transcribe, self.parts)
+        transcript_task = (None if injected is not None else
+                           loop.run_in_executor(None, self.session.transcribe, self.parts))
 
         queue: asyncio.Queue = asyncio.Queue()
 
@@ -508,11 +524,17 @@ class Turn:
         if calls and not self.cancelled:
             await emit("tool_call", {"calls": calls})
 
-        user_text = await transcript_task
-        self.marks["transcript"] = time.perf_counter() - t0
+        if transcript_task is None:
+            # Injected turn: history still needs the prompt Moti was answering, but the
+            # robot must not be told that the user said it.
+            user_text = injected
+        else:
+            user_text = await transcript_task
+            self.marks["transcript"] = time.perf_counter() - t0
         if self.cancelled:
             return
-        await emit("transcript", {"role": "user", "text": user_text})
+        if transcript_task is not None:
+            await emit("transcript", {"role": "user", "text": user_text})
         self.session.remember(user_text, full)
         await emit("done", {"text": full, "marks": self.marks})
 
