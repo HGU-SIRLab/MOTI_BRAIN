@@ -14,6 +14,7 @@ import asyncio
 import base64
 import io
 import json
+import logging
 import re
 import time
 import urllib.request
@@ -21,6 +22,8 @@ import uuid
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
+
+log = logging.getLogger("brain.pipeline")
 
 VLLM_URL = "http://127.0.0.1:8000/v1/chat/completions"
 MODEL = "google/gemma-4-E4B-it"
@@ -79,6 +82,17 @@ _BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
 # emit it reliably lives on the robot side (its persona); see brain/test_gates.py for the
 # measurement that settled it.
 SILENT_TOKEN = "<SILENT>"
+
+# Control tokens the robot's persona tells the model to emit — `[대화종료]` ends the
+# session, and there may be others we never hear about. They have to reach the robot
+# (`launcher.py` scans `output_transcription` for them, and that is its *only* channel),
+# but they must not be spoken: measured 2026-09-22, Piper renders `[대화종료]` as 1.23s of
+# perfectly clear speech, so Moti announced "대화종료" out loud before hanging up.
+#
+# Matched by shape rather than by a list, so the brain does not have to know the robot's
+# vocabulary: a bracketed run with no spaces. Ordinary empathetic Korean does not contain
+# `[한단어]`, and the cost of being wrong is one unspoken bracketed word.
+_CONTROL_TOKEN = re.compile(r"[\[<][^\[\]<>\s]+[\]>]")
 
 
 def _parse_call(body: str, first: dict | None = None) -> dict | None:
@@ -380,6 +394,15 @@ class Turn:
         # the first required parameter. Without this the call arrives with `args: {}`,
         # `launcher.py` runs `set_emotion()`, its try/except swallows the TypeError, and
         # the robot's face simply never changes. Silent, and only visible on video.
+        # A call that arrives without its required arguments is not actionable: the robot
+        # would run `set_emotion()` and its try/except would swallow the TypeError, so the
+        # face silently stays put. Measured 2026-09-22 on the real robot — the model does
+        # this intermittently (1 turn in 3) even with a correct schema and enum. Dropping
+        # it here turns an invisible robot-side failure into a visible brain-side log line.
+        self.tool_required = {
+            t["function"]["name"]: list(t["function"].get("parameters", {})
+                                        .get("required") or [])
+            for t in session.tools if t.get("function", {}).get("name")}
         self.tool_first_param = {
             t["function"]["name"]: (t["function"].get("parameters", {})
                                     .get("required") or [None])[0]
@@ -436,7 +459,14 @@ class Turn:
             # Pull tool markup out before anything can reach TTS; `raw` keeps only the
             # part that might still turn out to be a tool call.
             clean, found, raw = strip_tool_calls(raw, self.tool_names, self.tool_first_param)
-            calls += found
+            for c in found:
+                missing = [a for a in self.tool_required.get(c["name"], [])
+                           if a not in (c["args"] or {})]
+                if missing:
+                    log.warning("dropped %s — model gave no %s",
+                                c["name"], ", ".join(missing))
+                    continue
+                calls.append(c)
             if SILENT_TOKEN in clean:
                 clean = clean.replace(SILENT_TOKEN, "")
                 self.silent = True
@@ -480,8 +510,17 @@ class Turn:
     async def _speak(self, sentence: str, emit, t0: float) -> None:
         if self.cancelled or not sentence:
             return
+        # The transcript carries the sentence as written; only the audio drops control
+        # tokens (see `_CONTROL_TOKEN`). The robot needs to *read* `[대화종료]` and must
+        # not *hear* it.
+        say = _CONTROL_TOKEN.sub("", sentence).strip()
+        if not say:
+            # Nothing left to voice — still tell the robot what was said, or the tag is
+            # lost and the session never ends.
+            await emit("transcript", {"role": "model", "text": sentence + " "})
+            return
         loop = asyncio.get_running_loop()
-        pcm = await loop.run_in_executor(None, self.tts.synth, sentence)
+        pcm = await loop.run_in_executor(None, self.tts.synth, say)
         if self.cancelled:
             return
         if "first_audio" not in self.marks:

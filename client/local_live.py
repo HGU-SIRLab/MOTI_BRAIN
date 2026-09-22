@@ -88,6 +88,27 @@ def _enum_from(desc: str) -> list[str] | None:
     return vals or None
 
 
+_DESC_LIMIT = 1200
+_SENT_END = re.compile(r"(?<=[.!?])\s|(?<=[다요])\.\s")
+
+
+def _clip(text: str, limit: int = _DESC_LIMIT) -> str:
+    """Bound a description, but never mid-sentence.
+
+    The cap used to be a bare `[:600]`, which cut `remember_fact` in the middle of the
+    one sentence that mattered — "...confirming without calling lose" — so the model got
+    an unfinished instruction with nothing marking it as unfinished (robot report,
+    2026-09-22). A truncation the reader cannot see is worse than a shorter description.
+    The limit is generous (their longest real docstring is 550) and exists only so a
+    runaway docstring cannot crowd out the 18K persona.
+    """
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cuts = [m.end() for m in _SENT_END.finditer(text) if m.end() <= limit]
+    return (text[:cuts[-1]].rstrip() if cuts else text[:limit].rsplit(" ", 1)[0]) + " […]"
+
+
 def tool_schemas(tools) -> list[dict]:
     """Derive OpenAI-style declarations from plain callables.
 
@@ -131,7 +152,7 @@ def tool_schemas(tools) -> list[dict]:
             # Everything above `Args:`, not just the first paragraph — the second
             # paragraph is often *when* to call the tool, which is what stops the model
             # firing it at the wrong moment.
-            "description": (doc.split("Args:")[0].strip() or doc)[:600],
+            "description": _clip(doc.split("Args:")[0].strip() or doc),
             "parameters": {"type": "object", "properties": props,
                            "required": required}}})
     return out

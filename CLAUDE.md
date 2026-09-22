@@ -1604,6 +1604,59 @@ hand with clean one-line docstrings and `Literal[...]` hints, so the `Literal` b
 the `Args:` path never ran. A fourth instance of §20 rule 20 — the test doubles were *tidier* than the
 real thing, and tidiness is its own kind of unrealistic.
 
+### 13.13 🔴 `[MEASURED]` The brain was saying the session-end tag out loud (2026-09-22)
+
+Third live session. The robot reported that the user said "대화 종료" three times, Moti said goodbye
+three times, and the session never ended — they had to kill the process. Non-deterministic: the
+previous session had detected it correctly.
+
+**First question: did the model not emit `[대화종료]`, or did we strip it?** Only the brain can tell,
+and it is a five-minute experiment, so it was run before touching anything. Five phrasings, real
+persona, raw vLLM deltas printed beside what the pipeline emitted:
+
+| phrasing | tag in raw output | tag in spoken output |
+|---|---|---|
+| "이제 대화 그만할게" | yes | yes |
+| "대화 종료할게요" | yes | yes |
+| **"대화 종료"** | **no** | no |
+| "오늘은 여기까지 할게. 잘 있어" | no | no |
+| "그만 이야기하자" | no | no |
+
+**The pipeline is not guilty** — every tag the model produced arrived intact. The model emits it about
+40% of the time, and the phrasing it missed includes *the literal phrase the user said*. That is
+persona wording, which is robot-owned, so it goes back with the report.
+
+🔴 **But the experiment found a brain bug on the way through.** When the tag *does* arrive it reaches
+`_speak()` like any other sentence, and `Tts().synth("[대화종료]")` measures **1.23s of clear speech at
+full amplitude**. So on every successful exit, Moti announced "대화종료" out loud before hanging up.
+
+The fix has to thread a needle: `launcher.py` scans `output_transcription` for the tag and that is its
+**only** channel, so the tag must stay in the transcript while vanishing from the audio. `_speak()` now
+splits the two — the transcript carries the sentence as written, TTS gets it with control tokens
+removed, and a sentence that is *only* a control token emits the transcript and skips TTS entirely.
+
+Matched by **shape, not by a list**: a bracketed run with no spaces (`[대화종료]`, `<SILENT>`). The brain
+should not have to know the robot's vocabulary, and §9.3a already set the precedent that control tokens
+are the robot's to define and the brain's to honour. Ordinary empathetic Korean does not contain
+`[한단어]`, and being wrong costs one unspoken bracketed word.
+
+### 13.14 `[MEASURED]` Two smaller ones from the same report
+
+**A tool call missing its required arguments is now dropped, loudly.** `set_emotion({})` came back once
+in three turns even with a correct schema and enum (§13.12) — the model just does this sometimes.
+Forwarding it means the robot runs `set_emotion()`, its `try/except` swallows the `TypeError`, and the
+face silently stays put. The brain knows `required` from the schema it was handed, so it drops the call
+and logs `dropped set_emotion — model gave no emotion`. An invisible robot-side failure becomes a
+visible brain-side line. Tools that legitimately take nothing (`end_quiz_early`) are unaffected.
+
+**Description truncation no longer cuts mid-sentence.** §13.12's fix capped descriptions at a bare
+`[:600]`, and the robot found it slicing `remember_fact` through the middle of its load-bearing
+sentence — *"...confirming without calling lose"* — so the model received an unfinished instruction with
+nothing marking it unfinished. Now the cap is 1200 (their longest real docstring is 550), the cut lands
+on the last sentence boundary before it, and a truncated description ends in `[…]` so the reader can
+see it happened. **A truncation the reader cannot detect is worse than a shorter description** — and
+note that this was a bug *introduced by the previous fix*, found in one session.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
