@@ -1481,7 +1481,7 @@ config passes no tool names, so the marker list was effectively empty.
 merely give optimistic numbers; it removes whole code paths from the test. Tool parsing is ~60 lines of
 the pipeline and no test had ever run it against a declared tool list.
 
-### 13.10 ⛔ `[DEFERRED]` q4 quantization — there is no supported checkpoint for E4B on vLLM
+### 13.10 ⛔ `[DROPPED]` q4 quantization — off the roadmap, kept as a watch item
 
 §13.5 and §13.9 both end by pointing at quantization, and it was written up as if a vendor path
 existed. It does not. Searching the Hub for `gemma-4-E4B` quantizations (2026-09-19):
@@ -1510,9 +1510,47 @@ never run (§12, Q2). Everything measured so far is speed and transcription accu
 Korean empathetic conversation quality. Changing the model's numerics before that exists means a
 degradation could not be distinguished from ordinary variance. **Quantize after EXP-1, not before.**
 
-Deferred, not cancelled. Revisit when (a) a quality baseline exists and (b) live use shows decode speed
-is actually the dominant complaint — which §13.9's 2.65s suggests but has never been confirmed with a
-person in front of the robot.
+#### Decision 2026-09-22: stop planning for it
+
+Re-examined after three live sessions and moved from "deferred" to **not on the roadmap.** Four things
+turned the balance, and the first two are specific to this project rather than general caution.
+
+**1. The capability quantization degrades is the one the project is built on.** Quantization does not
+dull a model evenly — benchmark scores move a point or two while particular capabilities fall over, and
+the ones that fall over are non-dominant languages, precise token-level instruction following, and
+**multimodal encoders**. EXP-13 deleted two models from the design because E4B hears prosody through
+exactly that encoder. Risking it to save a second is a bad trade for a robot whose entire argument is
+that it noticed someone was not fine.
+
+**2. We are already marginal on precisely those capabilities**, measured, at bf16:
+
+| behaviour | today, unquantized |
+|---|---|
+| emits `[대화종료]` when asked to end | **40%** (§13.13) |
+| fills `set_emotion`'s required argument | fails ~1 turn in 3 (§13.14) |
+| Korean proper nouns | 조형민 → 조효형민 |
+
+These are not comfortable margins to spend.
+
+**3. The free lever is about as strong as the risky one.** First audio waits for the first *sentence*,
+so the term is `tokens × (1 / decode rate)`. Quantization attacks the second factor, maybe 3×. Telling
+the persona to open with a short sentence attacks the first, and a 30-token opener versus a 12-token
+one is 2–3×. **Comparable effect, zero quality risk, zero infrastructure, one line in a prompt that is
+already being edited.** Try that before spending anything.
+
+**4. For a thesis, bf16 is the more defensible number.** "Here is the honest latency of an unquantized
+open model on this board" reproduces; "here is a number from an unvetted community AWQ whose audio
+tower we did not audit" does not. Reproducibility is one of the stated reasons for going local at all
+(§1).
+
+**Reopen only if all three hold**: an official or vendor-supported quantized E4B for vLLM appears
+(not a community upload); live use shows latency is the *top* complaint rather than one of several; and
+a quality baseline exists to measure the damage against. Until then this is a watch item, not work.
+
+**Knock-on**: EXP-1 was promoted partly because "no numeric change to the model can be judged without a
+quality baseline". That rationale goes away with this decision. EXP-1 stays, for a better reason — it
+is the project's actual research question (is a local model good enough for Korean empathetic
+conversation?), not a gate on an optimization we are no longer pursuing.
 
 ### 13.11 🔴 `[MEASURED]` Barge-in did nothing on the real robot — the fake one never played audio
 
@@ -1657,7 +1695,9 @@ on the last sentence boundary before it, and a truncated description ends in `[�
 see it happened. **A truncation the reader cannot detect is worse than a shorter description** — and
 note that this was a bug *introduced by the previous fix*, found in one session.
 
-**Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
+**Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
+~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
+(0.209s warm); decode rate is, and the remaining lever there is prompt-side, not model-side.
 
 ---
 
@@ -1792,14 +1832,14 @@ until 2026-09-22 although the measurements had been in §13.0 for four days (rul
 - [ ] ④ EXP-8 again on the robot — §13.9's 2.65s is over a loopback socket with no mic, no AEC,
       no motors. Expect it to move
 - [ ] ⑤ EXP-10 thermal/power under motors + camera + face UI together
-- [ ] **⑥ EXP-1 (E4B vs 26B-A4B Korean quality)** — promoted from "only if quality looks marginal".
-      §13.10 needs it: no numeric change to the model can be judged without a quality baseline, and
-      after a live session there will finally be an informed opinion about what to rate
+- [ ] **⑥ EXP-1 (E4B vs 26B-A4B Korean quality)** — no longer a gate on quantization (§13.10 dropped
+      that), but kept and arguably more important: it is the project's actual research question, and
+      after live sessions there is finally an informed opinion about what to rate
 - [x] `<SILENT>` gate → EXP-7 ✅ 6/6 on text (§9.3a); still untested on audio — needs self-talk
       recordings, worth making during the robot session
 - [x] EXP-12 backchanneling ✅ built and measured (§12.7), window is narrow
 - [x] ~~EXP-4/5/6~~ — cancelled, they only existed to validate the deleted legs (§12.5)
-- [x] ~~EXP-3 MTP~~ — blocked by the container (§13.6); ~~q4~~ deferred until ⑥ (§13.10)
+- [x] ~~EXP-3 MTP~~ — blocked by the container (§13.6); ~~q4 quantization~~ **dropped** (§13.10)
 
 **Stage 6 — phase 2 transport**
 - [ ] Tailscale; verify `direct` not `relay` (§18); re-measure EXP-8 over it
