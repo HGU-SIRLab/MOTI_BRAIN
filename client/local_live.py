@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import typing
 import uuid
 from types import SimpleNamespace
@@ -41,6 +42,52 @@ _JSON_TYPES = {str: "string", int: "integer", float: "number", bool: "boolean"}
 SESSION_ID = uuid.uuid4().hex
 
 
+_ARG_LINE = re.compile(r"^\s{2,}(\w+)\s*:\s*(.*)$")
+# "one of" is the only phrasing treated as exhaustive. Quoted strings alone are not
+# enough: `memory_tools.remember_fact` documents `field` as
+#   (e.g. "name", "grade", ...), or any free-form label if it doesn't fit those
+# and turning that into an enum would *break* a tool that is meant to accept anything.
+_HEDGE = ("e.g", "예", "free-form", "any ", "etc")
+
+
+def _parse_args_section(doc: str) -> dict[str, str]:
+    """`Args:` block -> {param: its description}, joining wrapped lines.
+
+    Google's SDK feeds the whole callable to Gemini and the model sees all of this. Ours
+    has to extract it by hand, and until 2026-09-22 it did not: the description was cut
+    at the first blank line, which is *before* `Args:` in every tool this robot declares.
+    The model was told a tool existed and never told what to put in it — so it called
+    `set_emotion({})` every single turn and the robot's face never changed.
+    """
+    lines, out, cur = doc.splitlines(), {}, None
+    try:
+        start = next(i for i, ln in enumerate(lines)
+                     if ln.strip().rstrip(":").lower() in ("args", "arguments", "parameters"))
+    except StopIteration:
+        return {}
+    for ln in lines[start + 1:]:
+        if not ln.strip():
+            continue
+        m = _ARG_LINE.match(ln)
+        if m and not ln.strip().endswith(":"):
+            cur = m.group(1)
+            out[cur] = m.group(2).strip()
+        elif cur and ln.startswith(" " * 8):
+            out[cur] += " " + ln.strip()          # wrapped continuation
+        else:
+            break                                  # a new section (Returns:, …)
+    return out
+
+
+def _enum_from(desc: str) -> list[str] | None:
+    """Quoted values, but only when the wording says they are the whole set."""
+    low = desc.lower()
+    if "one of" not in low or any(h in low for h in _HEDGE):
+        return None
+    vals = re.findall(r'"([^"]+)"', desc)
+    return vals or None
+
+
 def tool_schemas(tools) -> list[dict]:
     """Derive OpenAI-style declarations from plain callables.
 
@@ -52,6 +99,8 @@ def tool_schemas(tools) -> list[dict]:
     for fn in tools or []:
         if not callable(fn):
             continue
+        doc = inspect.getdoc(fn) or ""
+        arg_docs = _parse_args_section(doc)
         props, required = {}, []
         try:
             sig = inspect.signature(fn)
@@ -68,11 +117,21 @@ def tool_schemas(tools) -> list[dict]:
                                 "enum": [str(a) for a in typing.get_args(hint)]}
             else:
                 props[pname] = {"type": _JSON_TYPES.get(hint, "string")}
+            # These tools annotate `emotion: str` and put the valid values in the
+            # docstring, so the type hint alone says nothing (§13.12).
+            if pname in arg_docs:
+                props[pname]["description"] = arg_docs[pname]
+                enum = _enum_from(arg_docs[pname])
+                if enum and "enum" not in props[pname]:
+                    props[pname]["enum"] = enum
             if param.default is inspect.Parameter.empty:
                 required.append(pname)
         out.append({"type": "function", "function": {
             "name": getattr(fn, "__name__", "tool"),
-            "description": (inspect.getdoc(fn) or "").split("\n\n")[0][:300],
+            # Everything above `Args:`, not just the first paragraph — the second
+            # paragraph is often *when* to call the tool, which is what stops the model
+            # firing it at the wrong moment.
+            "description": (doc.split("Args:")[0].strip() or doc)[:600],
             "parameters": {"type": "object", "properties": props,
                            "required": required}}})
     return out

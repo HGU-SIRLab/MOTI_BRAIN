@@ -1556,6 +1556,54 @@ production, this is a test *client* easier than production. The `[MEASURED]` 0.0
 wrong — it measured interrupting the brain mid-generation, which is a different and much rarer moment
 than interrupting the robot mid-sentence.
 
+### 13.12 🔴 `[MEASURED]` Every tool was declared without its parameters (2026-09-22)
+
+Second live session. Barge-in (§13.11) and the SLEEPY reconnect both verified on the robot and closed.
+A new one, reported with the cause already isolated on the robot side:
+
+```
+❌ 툴 호출 실패: set_emotion({}) -> TypeError("... missing 1 required positional argument: 'emotion'")
+```
+
+Every turn, 100% reproducible. **The robot's face never changed once in local-brain mode** — a plain
+regression against Gemini.
+
+`tool_schemas()` built each declaration's description as
+`inspect.getdoc(fn).split("\n\n")[0][:300]` — the first paragraph only. Every tool in this robot
+documents its valid values in an `Args:` block, which sits *after* a blank line. So the model was told a
+tool existed and never told what to put in it. This was not specific to `set_emotion`: all four tool
+modules (`emotion`, `memory`, `motion`, `quiz`) use `Args:`, so **every parameter of every tool was
+undocumented.**
+
+Google's SDK takes the callable whole and the model sees the entire docstring. The shim exists to
+present that same surface (§11.5), and here it was quietly presenting less.
+
+**Fix**: parse the `Args:` block into per-parameter `description`, and use everything above `Args:` as
+the function description so the *when to call it* paragraph survives too.
+
+⚠️ **The enum extraction had to be made deliberately timid.** The obvious rule — pull quoted strings out
+and call them an enum — is wrong here, and would have broken a working tool:
+
+| docstring | enum? | why |
+|---|---|---|
+| `emotion: one of "neutral", "happy", …` | ✅ 11 values | exhaustive by wording |
+| `joint: one of "right_arm", …` | ✅ 4 values | same |
+| `field: … (e.g. "name", "grade", …), **or any free-form label**` | ❌ none | quoted values are *examples*; an enum would reject everything else |
+| `speed: "slow", "normal", or "fast"` | ❌ none | no "one of", so description only — safe, not maximal |
+
+So: enum only when the line says **"one of"** and carries no hedge (`e.g.`, `any`, `free-form`, `etc`).
+Everything else rides in the description, which the model reads anyway.
+
+**Verified end to end**, real persona, real docstrings, four clips: `a1_tired → sad`,
+`a2_happy → happy`, `a3_anxious → sad`, `turn_s2 → tender`. Four for four, all valid, all matching the
+audio's tone. `client/test_tool_schemas.py` guards it with no server needed, including the negative
+case — it fails if `remember_fact.field` ever gains an enum.
+
+**Why nothing caught it**: the stand-in tools in `exp8_latency.py` and `fake_robot.py` were written by
+hand with clean one-line docstrings and `Literal[...]` hints, so the `Literal` branch always fired and
+the `Args:` path never ran. A fourth instance of §20 rule 20 — the test doubles were *tidier* than the
+real thing, and tidiness is its own kind of unrealistic.
+
 **Escalation**: E4B TTFT consistently >700ms → apply MTP + QAT → shorten context → consider E2B.
 
 ---
@@ -1564,7 +1612,7 @@ than interrupting the robot mid-sentence.
 
 | Feature `[OFFICIAL]` | Status | Path |
 |---|---|---|
-| Barge-in | ✅ **Implemented**, 0.07s | Silero VAD on the brain (§9.1a). 🔄 *Corrected 2026-09-19*: this row used to read "smart-turn is not in this path — it failed validation", written while Q19b was open. §9.1c/§9.1e resolved it and smart-turn **is** wired in, twice per pause (fast path + veto). Measured against the fake robot only; a real mic adds the AEC question (§18). |
+| Barge-in | ✅ **Verified on the robot 2026-09-22**, 0.10s | Silero VAD on the brain (§9.1a). 🔄 *Corrected 2026-09-19*: this row used to read "smart-turn is not in this path — it failed validation", written while Q19b was open. §9.1c/§9.1e resolved it and smart-turn **is** wired in, twice per pause (fast path + veto). No longer fake-robot only: confirmed on hardware, both while generating and while the robot is playing (§13.11). AEC turned out fine (§18.1). |
 | Interruption cancel/discard | ✅ **Implemented** | Cancels LLM generation and TTS together; robot drops its buffer (§11.0-1/-4). |
 | Audio transcription (both sides) | ✅ **Verified** | v5 credited the cascade's STT for this; EXP-13 deleted that leg, so the brain must ask E4B for the user transcript explicitly (§12.6). Measured word-for-word exact on Korean. |
 | High-quality natural speech | ⚠️ **Adequate, not chosen** | Piper `ko_KR-kss-medium` is the *only* Korean voice that exists for Piper (§8.3). It works; it was not selected on quality. |

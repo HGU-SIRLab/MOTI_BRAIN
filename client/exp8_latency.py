@@ -57,14 +57,35 @@ def _stand_in_tools() -> list:
     the *declarations* reach the model, and the persona is 18,344 tokens against a few
     hundred for these — close enough, and honest about being stand-ins.
     """
-    def remember_fact(key: str, value: str) -> str:
-        """사용자에 대해 알게 된 사실을 기억한다."""
+    # docstring 모양까지 실제와 맞춘다. 2026-09-22에 이 stand-in들이 한 줄짜리 깔끔한
+    # docstring이라 `Args:` 파싱 경로가 한 번도 안 돌았고, 그래서 실물에서 모든 툴이
+    # 인자 없이 호출되는 걸 못 잡았다(§13.12).
+    def remember_fact(field: str, value: str, confidence: str) -> str:
+        """사용자에 대해 알게 된 사실을 기억한다.
+
+        Args:
+            field: what kind of information this is (e.g. "name", "major"), or any
+                free-form label if it doesn't fit those.
+            value: the value learned, as plain text.
+            confidence: "certain" if they stated it directly, "inferred" otherwise.
+        """
     def forget_me() -> str:
         """사용자에 대해 기억한 내용을 모두 지운다."""
     def set_emotion(emotion: str) -> str:
-        """로봇의 표정을 바꾼다."""
+        """로봇의 표정을 바꾼다.
+
+        Call this once per response, right before or as you start speaking.
+
+        Args:
+            emotion: one of "neutral", "happy", "excited", "tender", "scared",
+                "angry", "sad", "surprised", "listening", "thinking", "scanning".
+        """
     def play_gesture(name: str) -> str:
-        """미리 정의된 제스처를 재생한다."""
+        """미리 정의된 제스처를 재생한다.
+
+        Args:
+            name: one of "greeting", "wave", "hug", "shy", "dance".
+        """
     def play_manual_motion(pan: int, tilt: int) -> str:
         """머리를 지정한 각도로 움직인다."""
     def start_quiz() -> str:
