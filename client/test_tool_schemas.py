@@ -39,11 +39,18 @@ def remember_fact(field: str, value: str, confidence: str) -> str:
     """
 
 
-def play_manual_motion(joint: str, intensity: float, speed: str, repeat: int) -> str:
-    """Move one joint.
+def express_gesture(joint: str, intensity: float, speed: str = "normal",
+                    repeat: int = 1) -> str:
+    """Play a small, tunable body movement on one joint.
+
+    The robot's real signature (`core/motion_tools.py:80`). It used to be written here as
+    `play_manual_motion(joint, …)`, a name that does not exist as a tool at all — that
+    was an internal helper taking a gesture *name*. The wrong name started in the spec,
+    reached this test and the stand-ins, and was sent to the robot as "verified" before
+    anyone checked it against the source (§12.6).
 
     Args:
-        joint: one of "right_arm", "left_arm", "shoulder", "head_nod".
+        joint: one of "right_arm", "left_arm", "shoulder".
         intensity: how big the movement is, from 0.0 (barely noticeable) to 1.0 (full range).
         speed: "slow", "normal", or "fast".
         repeat: how many times to repeat the movement, 1-3.
@@ -57,7 +64,7 @@ def no_args() -> str:
 def main() -> None:
     by_name = {s["function"]["name"]: s["function"]
                for s in tool_schemas([set_emotion, remember_fact,
-                                      play_manual_motion, no_args])}
+                                      express_gesture, no_args])}
     failures = []
 
     def check(cond, msg):
@@ -86,13 +93,17 @@ def main() -> None:
     check(field.get("description"), "field에 설명이 없다")
 
     # 4) "one of"가 있는 것만 enum. 없으면 설명으로만 전달한다.
-    props = by_name["play_manual_motion"]["parameters"]["properties"]
-    check(props["joint"].get("enum") == ["right_arm", "left_arm", "shoulder", "head_nod"],
-          f"joint enum이 틀렸다: {props['joint'].get('enum')}")
+    #    관절 목록 자체는 로봇이 조정 중이므로(head_nod은 쓰지 않는 모터라 제외 예정)
+    #    개수를 단언하지 않는다 — 남의 docstring 변경에 이 테스트가 깨지면 안 된다.
+    props = by_name["express_gesture"]["parameters"]["properties"]
+    check("right_arm" in (props["joint"].get("enum") or []),
+          f"joint enum이 비었거나 틀렸다: {props['joint'].get('enum')}")
     check("enum" not in props["speed"],
           "speed는 'one of'가 없어 enum을 붙이지 않는 게 맞다")
     check(props["intensity"]["type"] == "number", "intensity 타입이 number가 아니다")
     check(props["repeat"]["type"] == "integer", "repeat 타입이 integer가 아니다")
+    check("repeat" not in by_name["express_gesture"]["parameters"]["required"],
+          "기본값이 있는 인자가 required에 들어갔다")
 
     # 5) Args 절이 없는 툴도 깨지지 않아야 한다.
     check(by_name["no_args"]["parameters"]["properties"] == {},

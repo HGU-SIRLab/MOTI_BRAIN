@@ -86,8 +86,16 @@ def _stand_in_tools() -> list:
         Args:
             name: one of "greeting", "wave", "hug", "shy", "dance".
         """
-    def play_manual_motion(pan: int, tilt: int) -> str:
-        """머리를 지정한 각도로 움직인다."""
+    def express_gesture(joint: str, intensity: float, speed: str = "normal",
+                        repeat: int = 1) -> str:
+        """관절 하나를 작게 움직인다 — play_gesture보다 가벼운 반응.
+
+        Args:
+            joint: one of "right_arm", "left_arm", "shoulder".
+            intensity: how big the movement is, from 0.0 to 1.0.
+            speed: "slow", "normal", or "fast".
+            repeat: how many times to repeat the movement, 1-3.
+        """
     def start_quiz() -> str:
         """퀴즈를 시작한다."""
     def submit_guess(guess: str) -> str:
@@ -96,7 +104,7 @@ def _stand_in_tools() -> list:
         """힌트를 요청한다."""
     def end_quiz_early() -> str:
         """퀴즈를 중간에 끝낸다."""
-    return [remember_fact, forget_me, set_emotion, play_gesture, play_manual_motion,
+    return [remember_fact, forget_me, set_emotion, play_gesture, express_gesture,
             start_quiz, submit_guess, request_hint, end_quiz_early]
 
 

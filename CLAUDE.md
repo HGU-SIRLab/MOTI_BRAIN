@@ -1093,7 +1093,13 @@ Fourth instance of the pattern §14 now warns about: a later fix silently invali
 paragraph's premise, and nothing failed.
 
 **Gap 2 — function calling was never tested**, only asserted by §14. The entire robot depends on it
-(`remember_fact`, `set_emotion`, `play_manual_motion`, `express_gesture`, quiz tools).
+(`remember_fact`, `set_emotion`, `play_gesture`, `express_gesture`, quiz tools).
+🔄 *Corrected 2026-09-22.* This list said `play_manual_motion`, which **is not a tool** — it is an
+internal helper in `hardware/motion.py` that `play_gesture` calls, and it takes a gesture *name*, not a
+joint. The error started here and propagated: into the stand-in tools, into a test, and then into a
+"verified end to end" claim sent to the robot, which copied it into their own report before anyone
+checked it against the source. Four documents wrong from one line. The real surface is
+`play_gesture(name)` and `express_gesture(joint, intensity, speed, repeat)`.
 
 Closed: verified on this server. Text input produced three correct calls with correct arguments
 (`set_emotion(happy)`, `remember_fact(name)`, `remember_fact(major)`), `finish_reason: tool_calls`.
@@ -1729,6 +1735,36 @@ answering), and emits **no** `input_transcription`. It also saves an LLM call pe
 **Also fixed, from the same report**: the monitor now labels injected turns explicitly in its feed and
 marks user transcripts as `[마이크]`. The robot had to compare strings against a source constant to
 work out what they were looking at — that should have been visible at a glance.
+
+### 13.16 ⚠️ A wrong tool name travelled four documents before anyone checked the source (2026-09-22)
+
+§12.6 listed the robot's tools as *"`remember_fact`, `set_emotion`, `play_manual_motion`,
+`express_gesture`"*. **`play_manual_motion` is not a tool.** It is an internal helper in
+`hardware/motion.py` that `play_gesture` calls, and it takes a gesture *name*, not a joint. The robot's
+actual surface is `play_gesture(name)` and `express_gesture(joint, intensity, speed, repeat)`.
+
+The route it took is the point:
+
+1. written into this spec early, from memory rather than from the source;
+2. copied into the stand-in tools in `exp8_latency.py`, with an invented signature;
+3. used in `client/test_tool_schemas.py` as a test case, where it passed — a test can only check the
+   shape it was given;
+4. sent to the robot as **"제가 확인했으니 로봇에서 따로 검증 안 하셔도 됩니다"** — with the two real
+   tools' signatures swapped on top of the phantom name;
+5. copied by the robot into their own report, which is where it was finally caught, **by them, against
+   their own source.**
+
+Nothing failed at any step. Every document was internally consistent and all of them were wrong.
+
+**Two habits come out of this.** A signature that belongs to the other repo gets read out of that repo
+before it is used, not recalled — and a "verified" claim about the other side's interface is worth less
+than the five seconds of `grep` that would have checked it.
+
+⚠️ **And the clone here is stale.** `/home/herobot/MOTI-HRI` sits on `jetson-moti @ 3cacfcf`
+(2026-09-03) while the robot works on `local-brain-integration @ cff42db`. Three weeks. Most files
+still matched — which is exactly why it went unnoticed — but claims sourced from that clone are claims
+about an old branch, and line numbers cited from it in `docs/robot_integration.md` should be treated as
+approximate. The robot's report is the authority on the robot's code, not this copy.
 
 **Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
 ~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
