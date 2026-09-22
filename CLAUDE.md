@@ -1676,8 +1676,8 @@ note that this was a bug *introduced by the previous fix*, found in one session.
 | Async function calling | ⚠️ Custom work | Not free; low priority for Moti |
 | Background reasoning | ❌ Deliberately excluded | Thinking mode kills latency (§5.4) |
 | 24 languages | ❌ Korean-only | Irrelevant for Moti |
-| Natural conversational rhythm | ⚠️ **Built, marginal** | 🔄 *Corrected 2026-09-19*: read "Not started / backchanneling not built". Backchanneling **is** built (§12.7) — but its safe trigger is 1.4s while the reply now lands at ~2.0s, so it covers 0.6s of the silence, not the 1.4s the idea promised. The "1.5s of dead silence" this row used to cite is also gone: the fast path closes most turns at ~0.6s (§9.1e). |
-| Sub-500ms latency | ❌ **2.02s measured** | 🔄 *Corrected 2026-09-19*: this row cited §13.4's 1.98s and predicted ~0.65s once Q19 was fixed. Q19b **was** fixed and that prediction was wrong — §9.1c retracts it explicitly. Current figure is §13.5's 2.02s on natural turns (p95 2.82s). **The bottleneck moved**: turn detection is down to ~0.6s, and what dominates now is decoding the first sentence at 13 tok/s. The remaining lever is q4 quantization (§13.6), not turn detection. |
+| Natural conversational rhythm | ⚠️ **Built, and switched off in the field** | Backchanneling works (§12.7) but its safe trigger is 1.4s against a reply at 2.5s+, so it covers little. 🔄 *2026-09-22*: after live use the robot set `BRAIN_BACKCHANNEL=false` in its `.env` — users found "음..." mistimed and artificial. Not a defect, a felt-quality call, and reversible in one line. The brain's default stays on. |
+| Sub-500ms latency | ❌ **2.5–4.7s** | 🔄 *Re-corrected 2026-09-22.* Was still quoting §13.4's 2.02s, a toy-persona figure (§13.9). Under the real persona the floor is a steady **1.42s** and the mean wanders between 2.5s and 4.7s run to run, because first audio waits for the first *sentence* and its length is sampled. Turn detection is ~0.6s of it; the rest is generating that sentence at 13 tok/s. Quantization is the obvious lever and is **deferred on evidence** (§13.10). A cheaper one is untried: telling the persona to open with a short sentence costs no quality at all. |
 
 **Status as of 2026-09-19**: of 13 rows — **6 verified or implemented**, 4 partial (voice quality,
 emotional speech output, async function calling, conversational rhythm), 2 deliberately out of scope,
@@ -1753,10 +1753,11 @@ starting the next; do not run parallel blockers just to save days we do not need
 - [ ] Skim `itsMustafamr/Jarvis-home` for its ALSA/VAD/WebSocket audio path
 - [ ] AI-Hub request — **deferred**: only needed if EXP-13 is killed *and* Korean SER proves poor (§10). Approval latency is still the reason to submit early if EXP-13 looks shaky.
 
-**Stage 1 — LLM leg standing up** (lowest risk, unblocks everything)
-- [ ] Serve E4B via vLLM in the NVIDIA-supported container (§5.3), confirm streaming `curl`
-- [ ] bf16 first — no quantization until measurement says otherwise (§13 escalation)
-- [ ] Measure TTFT + tok/s → EXP-2
+**Stage 1 — LLM leg standing up** ✅ **DONE (§13.0, 2026-09-18)** — boxes were left unticked
+until 2026-09-22 although the measurements had been in §13.0 for four days (rule 19 again)
+- [x] E4B served via vLLM in the NVIDIA container (§5.3); `scripts/run_vllm.sh`, streaming confirmed
+- [x] bf16, no quantization — and §13.10 has since deferred q4 on evidence, not assumption
+- [x] EXP-2: warm TTFT **0.209s**, decode **13.2 tok/s**, KV 67,712 tokens (`scripts/bench_llm.py`)
 
 **Stage 2 — EXP-13 ✅ DONE (§12.4, 2026-09-19)**
 - [x] Audio token rate and 30s ceiling measured empirically (§12.3)
@@ -1783,9 +1784,9 @@ starting the next; do not run parallel blockers just to save days we do not need
       decides whether any of the above survives contact with a microphone (§14 status note)
 
 **Stage 5 — behavior and measurement** (ordered 2026-09-19; everything here needs the robot)
-- [ ] **① AEC first** — `python3 -c "import aec_audio_processing"` on the robot before anything else
-      (§18.1). If it raises, echo cancellation is off no matter what `.env` says, and our 0.07s
-      barge-in will make the robot interrupt itself. Everything below is unreadable until this is known
+- [x] **① AEC** ✅ **closed 2026-09-22** — PulseAudio `module-echo-cancel`, survives reboot, zero
+      echo-induced barge-ins across three live sessions, and no doubletalk over-suppression either
+      (§18.1). Q16 answered
 - [ ] ② The five remaining checks in `docs/robot_integration.md` §4, in that order
 - [ ] ③ EXP-9 barge-in + playback flush, with a real mic in the loop
 - [ ] ④ EXP-8 again on the robot — §13.9's 2.65s is over a loopback socket with no mic, no AEC,
