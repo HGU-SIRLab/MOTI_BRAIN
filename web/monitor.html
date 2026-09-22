@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모티 뇌 모니터</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --line:#262d36; --ink:#e6edf3; --dim:#8b949e;
+    --accent:#58a6ff; --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --user:#1f6feb; --moti:#238636;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg:#f6f8fa; --panel:#fff; --line:#d8dee4; --ink:#1f2328; --dim:#636c76;
+      --accent:#0969da; --good:#1a7f37; --warn:#9a6700; --bad:#cf222e;
+      --user:#0969da; --moti:#1a7f37;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:13px/1.55 ui-monospace,"SF Mono",Menlo,"Noto Sans KR",monospace; }
+  .wrap { max-width:1280px; margin:0 auto; padding:14px 14px 40px; }
+  header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+  h1 { font-size:15px; margin:0; font-weight:700; }
+  .sub { color:var(--dim); font-size:12px; }
+  .dot { width:8px;height:8px;border-radius:50%;background:var(--bad);display:inline-block; }
+  .dot.on { background:var(--good); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .card h2 { font-size:11px; color:var(--dim); margin:0 0 8px; font-weight:600;
+             letter-spacing:.04em; text-transform:uppercase; }
+  .kv { display:flex; justify-content:space-between; gap:10px; padding:2px 0; }
+  .kv b { font-weight:700; font-variant-numeric:tabular-nums; }
+  .big { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.15; }
+  .unit { font-size:12px; color:var(--dim); font-weight:400; }
+  .bar { height:7px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:5px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--good); transition:width .1s linear; }
+  .bar > i.hot { background:var(--warn); }
+  .state { font-size:15px; font-weight:700; }
+  .state.speech { color:var(--good); } .state.play { color:var(--accent); }
+  .state.idle { color:var(--dim); }
+  #feed { margin-top:10px; background:var(--panel); border:1px solid var(--line);
+          border-radius:8px; padding:8px 12px; height:46vh; overflow-y:auto; }
+  .ev { display:flex; gap:9px; padding:2px 0; border-bottom:1px solid transparent; }
+  .ev .ts { color:var(--dim); min-width:58px; font-variant-numeric:tabular-nums; }
+  .ev .tag { min-width:88px; font-weight:700; font-size:11px; padding-top:1px; }
+  .ev .body { flex:1; word-break:break-word; }
+  .tag.transcript-user { color:var(--user); }
+  .tag.transcript-model { color:var(--moti); }
+  .tag.tool_call { color:var(--warn); }
+  .tag.bargein { color:var(--bad); }
+  .tag.error, .tag.disconnect { color:var(--bad); }
+  .tag.turn_start, .tag.turn_end { color:var(--accent); }
+  .tag.connect, .tag.speculation, .tag.backchannel { color:var(--dim); }
+  .marks { color:var(--dim); }
+  .marks b { color:var(--ink); }
+  label.chk { color:var(--dim); font-size:12px; display:inline-flex; gap:5px; align-items:center; }
+  button { background:transparent; color:var(--accent); border:1px solid var(--line);
+           border-radius:5px; padding:3px 9px; font:inherit; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>모티 뇌 모니터</h1>
+    <span class="sub"><span class="dot" id="dot"></span> <span id="conn">연결 중…</span></span>
+    <span class="sub" id="peer"></span>
+    <span style="flex:1"></span>
+    <label class="chk"><input type="checkbox" id="follow" checked> 자동 스크롤</label>
+    <label class="chk"><input type="checkbox" id="showvad"> VAD 줄도 표시</label>
+    <button id="clear">지우기</button>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h2>지금 상태</h2>
+      <div class="state idle" id="state">대기</div>
+      <div class="bar"><i id="vadbar"></i></div>
+      <div class="kv"><span>음성 확률</span><b id="prob">—</b></div>
+      <div class="kv"><span>침묵</span><b id="sil">—</b></div>
+      <div class="kv"><span>로봇 재생 잔여</span><b id="playing">—</b></div>
+    </div>
+
+    <div class="card">
+      <h2>직전 턴</h2>
+      <div class="big" id="firstaudio">—<span class="unit">s 첫 오디오</span></div>
+      <div class="kv"><span>첫 토큰</span><b id="firsttok">—</b></div>
+      <div class="kv"><span>전사</span><b id="trans">—</b></div>
+      <div class="kv"><span>프리필 / 생성</span><b id="toks">—</b></div>
+      <div class="kv"><span>디코딩</span><b id="tps">—</b></div>
+    </div>
+
+    <div class="card">
+      <h2>세션 누적</h2>
+      <div class="kv"><span>턴</span><b id="nturns">0</b></div>
+      <div class="kv"><span>끼어들기</span><b id="nbarge">0</b> </div>
+      <div class="kv"><span>└ 재생 중</span><b id="nbargep">0</b></div>
+      <div class="kv"><span>툴 호출</span><b id="ntool">0</b></div>
+      <div class="kv"><span>취소된 턴</span><b id="ncancel">0</b></div>
+      <div class="kv"><span>오류</span><b id="nerr">0</b></div>
+    </div>
+
+    <div class="card">
+      <h2>vLLM</h2>
+      <div class="big" id="cache">—<span class="unit">% 캐시 적중</span></div>
+      <div class="kv"><span>프리필 토큰 누적</span><b id="pref">—</b></div>
+      <div class="kv"><span>실행 / 대기</span><b id="rw">—</b></div>
+    </div>
+
+    <div class="card">
+      <h2>보드 (tegrastats)</h2>
+      <div class="kv"><span>GPU</span><b id="gpu">—</b></div>
+      <div class="bar"><i id="gpubar"></i></div>
+      <div class="kv"><span>RAM</span><b id="ram">—</b></div>
+      <div class="bar"><i id="rambar"></i></div>
+      <div class="kv"><span>온도</span><b id="temp">—</b></div>
+      <div class="kv"><span>전력</span><b id="watts">—</b></div>
+    </div>
+  </div>
+
+  <div id="feed"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const n = { turns:0, barge:0, bargep:0, tool:0, cancel:0, err:0 };
+let ws, lastMarks = null;
+
+function esc(s){ return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
+
+function row(ev) {
+  if (ev.kind === "vad" && !$("showvad").checked) return;
+  if (ev.kind === "sys" || ev.kind === "vllm") return;   // 카드로만 보여준다
+  const d = document.createElement("div");
+  d.className = "ev";
+  let tag = ev.kind, body = "";
+  switch (ev.kind) {
+    case "transcript":
+      tag = "transcript-" + ev.role;
+      body = (ev.role === "user" ? "🗣 " : "🤖 ") + esc(ev.text.trim());
+      break;
+    case "tool_call":
+      body = ev.calls.map(c => `${c.name}(${JSON.stringify(c.args)})`).join("  ");
+      break;
+    case "turn_start":
+      body = ev.injected ? "주입된 턴 (인사 트리거)" : `오디오 ${ev.secs}초`;
+      break;
+    case "turn_end": {
+      const m = ev.marks || {};
+      const bits = [];
+      if (m.first_token !== undefined) bits.push(`첫토큰 <b>${m.first_token}s</b>`);
+      if (m.first_audio !== undefined) bits.push(`첫오디오 <b>${m.first_audio}s</b>`);
+      if (m.transcript !== undefined) bits.push(`전사 <b>${m.transcript}s</b>`);
+      if (m.prompt_tokens) bits.push(`프리필 <b>${m.prompt_tokens}</b>`);
+      if (m.completion_tokens) bits.push(`생성 <b>${m.completion_tokens}</b>`);
+      if (ev.cancelled) bits.push("<b style='color:var(--bad)'>취소됨</b>");
+      if (ev.silent) bits.push("&lt;SILENT&gt;");
+      body = `<span class="marks">${bits.join(" · ")}</span>`;
+      break;
+    }
+    case "bargein":
+      body = ev.during === "playing" ? "로봇이 재생 중 — 버퍼 비우라고 지시" : "생성 중 턴 취소";
+      break;
+    case "backchannel": body = `맞장구 (침묵 ${ev.after}초)`; break;
+    case "speculation": body = `투기적 생성 채택 (준비된 문장 ${ev.ready})`; break;
+    case "audio": body = `${ev.kind2 || ""}${ev.secs}초 전송`; break;
+    case "connect": body = esc(ev.peer); break;
+    case "disconnect": body = `code=${ev.code} ${esc(ev.reason || "")}`; break;
+    case "error": body = esc(ev.detail); break;
+    case "vad": body = `p=${ev.p} ${ev.speech ? "음성" : "무음"} 침묵 ${ev.silence}초`; break;
+    default: body = esc(JSON.stringify(ev));
+  }
+  d.innerHTML = `<span class="ts">${ev.t.toFixed(2)}</span>`
+              + `<span class="tag ${tag}">${tag}</span><span class="body">${body}</span>`;
+  $("feed").appendChild(d);
+  while ($("feed").children.length > 600) $("feed").removeChild($("feed").firstChild);
+  if ($("follow").checked) $("feed").scrollTop = $("feed").scrollHeight;
+}
+
+function apply(ev) {
+  switch (ev.kind) {
+    case "vad": {
+      $("prob").textContent = ev.p.toFixed(3);
+      $("sil").textContent = ev.silence + "s";
+      $("playing").textContent = ev.playing > 0 ? ev.playing + "s" : "—";
+      const b = $("vadbar");
+      b.style.width = Math.min(100, ev.p * 100) + "%";
+      b.className = ev.speech ? "" : "hot";
+      const st = $("state");
+      if (ev.speech) { st.textContent = "사용자 발화"; st.className = "state speech"; }
+      else if (ev.playing > 0) { st.textContent = "로봇 재생 중"; st.className = "state play"; }
+      else { st.textContent = "대기"; st.className = "state idle"; }
+      break;
+    }
+    case "turn_start": n.turns++; $("nturns").textContent = n.turns; break;
+    case "turn_end": {
+      const m = ev.marks || {};
+      lastMarks = m;
+      if (ev.cancelled) { n.cancel++; $("ncancel").textContent = n.cancel; }
+      $("firstaudio").innerHTML = (m.first_audio ?? "—")
+        + '<span class="unit">s 첫 오디오</span>';
+      $("firsttok").textContent = m.first_token !== undefined ? m.first_token + "s" : "—";
+      $("trans").textContent = m.transcript !== undefined ? m.transcript + "s" : "—";
+      $("toks").textContent = (m.prompt_tokens || "—") + " / " + (m.completion_tokens || "—");
+      $("tps").textContent = (m.completion_tokens && m.first_audio)
+        ? (m.completion_tokens / Math.max(0.1, (m.transcript || m.first_audio))).toFixed(1) + " tok/s"
+        : "—";
+      break;
+    }
+    case "bargein":
+      n.barge++; $("nbarge").textContent = n.barge;
+      if (ev.during === "playing") { n.bargep++; $("nbargep").textContent = n.bargep; }
+      break;
+    case "tool_call": n.tool += ev.calls.length; $("ntool").textContent = n.tool; break;
+    case "error": n.err++; $("nerr").textContent = n.err; break;
+    case "connect": $("peer").textContent = "로봇 " + ev.peer; break;
+    case "disconnect": $("peer").textContent = "로봇 연결 끊김"; break;
+    case "vllm":
+      if (ev.cache_hit !== undefined) {
+        $("cache").innerHTML = ev.cache_hit + '<span class="unit">% 캐시 적중</span>';
+        $("pref").textContent = ev.prefill_tokens.toLocaleString();
+      }
+      if (ev.running !== undefined) $("rw").textContent = ev.running + " / " + (ev.waiting ?? 0);
+      break;
+    case "sys":
+      if (ev.gpu !== undefined) {
+        $("gpu").textContent = ev.gpu + "%";
+        $("gpubar").style.width = ev.gpu + "%";
+        $("gpubar").className = ev.gpu > 80 ? "hot" : "";
+      }
+      if (ev.ram_used) {
+        const pct = 100 * ev.ram_used / ev.ram_total;
+        $("ram").textContent = (ev.ram_used/1024).toFixed(1) + " / "
+                             + (ev.ram_total/1024).toFixed(0) + " GB";
+        $("rambar").style.width = pct + "%";
+        $("rambar").className = pct > 85 ? "hot" : "";
+      }
+      if (ev.temp !== undefined) $("temp").textContent = ev.temp.toFixed(1) + " °C";
+      if (ev.watts !== undefined) $("watts").textContent = ev.watts + " W";
+      break;
+  }
+}
+
+function connect() {
+  ws = new WebSocket("ws://" + location.host);
+  ws.onopen = () => { $("conn").textContent = "연결됨"; $("dot").className = "dot on"; };
+  ws.onclose = () => {
+    $("conn").textContent = "끊김 — 3초 후 재시도";
+    $("dot").className = "dot";
+    setTimeout(connect, 3000);
+  };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.kind === "backlog") { m.events.forEach(ev => { apply(ev); row(ev); }); return; }
+    apply(m); row(m);
+  };
+}
+$("clear").onclick = () => { $("feed").innerHTML = ""; };
+connect();
+</script>
+</body>
+</html>

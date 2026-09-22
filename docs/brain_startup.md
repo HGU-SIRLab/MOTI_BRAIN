@@ -20,6 +20,15 @@ bash /home/herobot/moti_brain/scripts/start_brain.sh
 bash scripts/start_brain.sh 조형민
 ```
 
+**뇌 서버 코드를 고쳤으면 `--restart`를 붙인다.** 안 붙이면 "이미 떠 있다"로 넘어가서 옛
+프로세스가 그대로 돈다 — 2026-09-22에 그걸로 물렸다. 옛 서버가 포트를 쥔 채 새 서버가
+즉사했고, 그 사실을 모른 채 **수정 전 서버를 상대로 테스트를 돌려 "수정이 안 먹는다"고
+오판했다.** vLLM은 안 건드리므로 10초면 끝난다.
+
+```bash
+bash scripts/start_brain.sh --restart
+```
+
 ---
 
 ## ⏱ 얼마나 걸리는가
@@ -123,8 +132,13 @@ PYTHONPATH= .venv_tts/bin/python scripts/prewarm.py 조형민       # 등록 사
 ```bash
 curl -sf http://localhost:8000/v1/models     # vLLM
 ss -ltn | grep 8765                          # 뇌 서버
+ss -ltn | grep 8766                          # 모니터
 tail -f /home/herobot/moti_brain/logs/brain.log
 ```
+
+**대화 중에 안을 보려면 모니터를 쓰는 게 로그보다 낫다** — 브라우저로
+`http://<AGX>:8766/`. 로그에 없는 것들이 거기 있다: VAD 확률, 턴별 타이밍,
+prefix 캐시 적중률, GPU·온도. 설치할 것 없고 뇌 서버가 직접 서빙한다.
 
 진짜로 대화가 되는지까지 보려면 (약 1분):
 

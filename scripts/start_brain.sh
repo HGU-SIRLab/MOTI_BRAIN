@@ -9,6 +9,17 @@ ROOT=/home/herobot/moti_brain
 cd "$ROOT" || exit 1
 mkdir -p logs
 
+# --restart: 뇌 서버만 내렸다 다시 올린다(vLLM은 그대로 — 그건 29분이다).
+# 이게 없으면 "이미 떠 있다"로 넘어가서 방금 고친 코드가 반영되지 않는다. 2026-09-22에
+# 그걸로 한 번 물렸다 — 옛 프로세스가 포트를 쥔 채, 수정 전 서버를 상대로 테스트를 돌리고
+# "수정이 안 먹는다"고 오판했다.
+RESTART=no
+ARGS=()
+for a in "$@"; do
+  if [ "$a" = "--restart" ]; then RESTART=yes; else ARGS+=("$a"); fi
+done
+set -- ${ARGS+"${ARGS[@]}"}
+
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 no()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
@@ -50,8 +61,16 @@ fi
 # pkill은 쓰지 않는다 — 패턴이 자기 셸 명령줄에 걸려 스크립트째로 죽는다(exit 144).
 say "3/5  뇌 서버 (:8765)"
 PID=$(pgrep -f "venv_tts/bin/python [b]rain/server.py" || true)
+if [ -n "$PID" ] && [ "$RESTART" = yes ]; then
+  echo "  --restart: PID $PID 종료"
+  # pgrep이 여러 개를 돌려줄 수 있으므로 하나씩 숫자로 죽인다. `kill "$(pgrep ...)"`는
+  # 여러 줄이 들어가면 통째로 실패한다(그리고 조용히 실패한다).
+  for pid in $PID; do kill "$pid" 2>/dev/null || true; done
+  for _ in $(seq 1 15); do pgrep -f "venv_tts/bin/python [b]rain/server.py" >/dev/null || break; sleep 1; done
+  PID=""
+fi
 if [ -n "$PID" ]; then
-  ok "이미 떠 있다 (PID $PID)"
+  ok "이미 떠 있다 (PID $PID)  — 코드를 고쳤다면 --restart 를 붙일 것"
 else
   PYTHONPATH= nohup .venv_tts/bin/python brain/server.py >> logs/brain.log 2>&1 &
   for _ in $(seq 1 30); do
@@ -78,5 +97,8 @@ for ip in $(ip -4 addr show 2>/dev/null | grep -oP 'inet \K[\d.]+(?=/)' | grep -
 done
 
 say "준비 완료"
+for ip in $(ip -4 addr show 2>/dev/null | grep -oP 'inet \K[\d.]+(?=/)' | grep -Ev '^(127|172)\.'); do
+  echo "  모니터:     http://$ip:8766/"
+done
 echo "  로그 보기:  tail -f $ROOT/logs/brain.log"
 echo "  스모크:     PYTHONPATH= .venv_tts/bin/python client/test_local_live.py"

@@ -27,6 +27,7 @@ import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from brain.backchannel import Backchannel  # noqa: E402
+from brain import monitor  # noqa: E402
 from brain.pipeline import Session, Tts, Turn  # noqa: E402
 from brain.vad import TurnDetector  # noqa: E402
 
@@ -100,6 +101,7 @@ class Connection:
         # The fake robot never played audio in real time, so this window did not exist in
         # any test. Loop time, comparable with `asyncio.get_running_loop().time()`.
         self._playing_until = 0.0
+        self._mon_at = 0.0           # VAD는 초당 31번이다 — 뷰어에는 8Hz로 줄여 보낸다
         self.detector = TurnDetector()
         self.session: Session | None = None
         self.turns: asyncio.Queue = asyncio.Queue()
@@ -121,6 +123,8 @@ class Connection:
             await self.send(t="audio", rate=payload["rate"], bytes=len(payload["pcm"]),
                             kind=kind_)
             await self.ws.send(payload["pcm"])
+            monitor.publish("audio", secs=round(len(payload["pcm"]) / 2 / payload["rate"], 2),
+                            stream=kind_)
             if kind_ == "reply":
                 # Track when the robot will run out of audio, so barge-in keeps working
                 # after we stop sending (see `_playing_until`). Backchannels are excluded:
@@ -131,15 +135,20 @@ class Connection:
                 base = max(self._playing_until - PLAYBACK_SLACK, now)
                 self._playing_until = base + secs + PLAYBACK_SLACK
         elif kind == "transcript":
+            monitor.publish("transcript", role=payload["role"], text=payload["text"])
             await self.send(t="transcript", role=payload["role"], text=payload["text"])
         elif kind == "tool_call":
+            monitor.publish("tool_call", calls=payload["calls"])
             await self.send(t="tool_call", calls=payload["calls"])
         elif kind == "error":
+            monitor.publish("error", detail=payload["detail"])
             await self.send(t="error", detail=payload["detail"])
 
     # ---- turn processing ------------------------------------------------
     async def run_turn(self, pcm: bytes | None = None, text: str | None = None) -> None:
         assert self.session is not None
+        monitor.publish("turn_start",
+                        secs=round(len(pcm or b"") / 2 / 16000, 2), injected=text is not None)
         turn = Turn(self.session, self.tts, pcm or b"")
         if text is not None:
             # An injected turn (the robot asking Moti to greet first) carries no audio.
@@ -159,6 +168,8 @@ class Connection:
                 await self.collect_tool_results(turn, calls)
         finally:
             self.current = None
+            monitor.publish("turn_end", cancelled=turn.cancelled, silent=turn.silent,
+                            marks={k: round(v, 2) for k, v in turn.marks.items()})
             if not turn.cancelled:
                 await self.send(t="turn_complete")
 
@@ -197,6 +208,14 @@ class Connection:
         self._last_audio = asyncio.get_running_loop().time()
         turns = self.detector.feed(pcm)
 
+        now = self._last_audio
+        if now - self._mon_at >= 0.125:
+            self._mon_at = now
+            monitor.publish("vad", p=round(self.detector.last_prob, 3),
+                            speech=self.detector.in_speech,
+                            silence=round(self.detector.silence_secs, 2),
+                            playing=max(0.0, round(self._playing_until - now, 1)))
+
         if self.detector.speech_run:
             self._acked = False      # they are talking again; arm for the next pause
             self._drop_speculation()  # whatever we were preparing answers the wrong thing
@@ -220,6 +239,7 @@ class Connection:
             self._playing_until = 0.0
             await self.send(t="interrupted")
             log.info("barge-in: turn cancelled")
+            monitor.publish("bargein", during="generating")
         elif speaking and still_playing:
             # Nothing left to cancel here — the work is done and the bytes are gone. The
             # robot still has to drop what is in its buffer, which is exactly what
@@ -228,6 +248,7 @@ class Connection:
             self._playing_until = 0.0
             await self.send(t="interrupted")
             log.info("barge-in: robot still playing, told it to flush")
+            monitor.publish("bargein", during="playing")
 
         # EXP-12: the user has stopped but the VAD is not yet sure. Rather than 1.5s of
         # dead air, acknowledge. This does not make the reply arrive sooner — it stops the
@@ -241,6 +262,7 @@ class Connection:
                                       "kind": "backchannel"})
             log.info("backchannel (%.0fms of silence)",
                      self.detector.silence_secs * 1000)
+            monitor.publish("backchannel", after=round(self.detector.silence_secs, 2))
 
         # Start preparing a reply while the VAD is still deciding.
         if (self.speculate and self.session is not None and self.current is None
@@ -345,6 +367,7 @@ class Connection:
             return False
         await self.send(t="turn_complete")
         log.info("speculation adopted (%d ready, rest streamed)", head)
+        monitor.publish("speculation", ready=head)
         return True
 
     async def watchdog(self) -> None:
@@ -384,6 +407,7 @@ async def handle(ws, tts: Tts, backchannel: Backchannel) -> None:
     worker = asyncio.create_task(conn.worker())
     watchdog = asyncio.create_task(conn.watchdog())
     log.info("robot connected: %s", ws.remote_address)
+    monitor.publish("connect", peer=str(ws.remote_address))
     try:
         async for message in ws:
             if isinstance(message, bytes):
@@ -404,6 +428,7 @@ async def handle(ws, tts: Tts, backchannel: Backchannel) -> None:
         close = getattr(ws, "close_code", None)
         reason = (getattr(ws, "close_reason", "") or "").strip()
         log.info("robot disconnected (code=%s%s)", close, f", {reason}" if reason else "")
+        monitor.publish("disconnect", code=close, reason=reason)
 
 
 async def main() -> None:
@@ -413,6 +438,7 @@ async def main() -> None:
     backchannel = Backchannel(tts)  # pre-synthesized; a live call would defeat the point
     log.info("Piper ready (%dHz), %d backchannel clips. listening on ws://%s:%d",
              tts.rate, len(backchannel.clips), HOST, PORT)
+    await monitor.start()
     async with websockets.serve(lambda ws: handle(ws, tts, backchannel), HOST, PORT,
                                 max_size=None):      # audio frames are large
         await asyncio.Future()

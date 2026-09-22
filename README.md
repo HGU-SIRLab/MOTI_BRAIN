@@ -163,6 +163,26 @@ bash scripts/start_brain.sh
 [`docs/robot_integration.md`](docs/robot_integration.md) 하나면 된다. 요약하면
 `launcher.py:540` 한 줄 + `.env` 두 개 + shim 파일 복사.
 
+### 대화 중에 뇌 안을 들여다보기 — `http://<AGX>:8766/`
+
+뇌 서버가 모니터를 같이 띄운다. **브라우저만 있으면 되고 설치할 게 없다** — 마이크를 안
+쓰므로 보안 컨텍스트 제약도 없어서 노트북에서 AGX 주소로 바로 열면 된다.
+
+보이는 것:
+
+| | |
+|---|---|
+| 지금 상태 | VAD 음성 확률(8Hz), 침묵 길이, **로봇이 재생 중인 잔여 시간** |
+| 직전 턴 | 첫 토큰 / 첫 오디오 / 전사 시각, 프리필·생성 토큰 수 |
+| 세션 누적 | 턴·끼어들기(생성 중/재생 중 구분)·툴 호출·취소·오류 |
+| vLLM | **prefix 캐시 적중률** — 예열이 듣고 있는지 보는 유일한 방법 |
+| 보드 | GPU·RAM·온도·전력 (`tegrastats`, jtop과 같은 출처) |
+| 이벤트 피드 | 전사, 툴 인자, 끼어들기, 맞장구, 투기적 생성이 타임스탬프와 함께 |
+
+모니터는 **철저히 관찰자**다. 보는 사람이 없으면 아무것도 하지 않고, 느린 뷰어는 이벤트를
+버릴지언정 대화를 지연시키지 않는다. (이 원칙을 만든 첫날 호출부 하나가 인자 이름 충돌로
+턴을 죽였다 — 그래서 `publish()`의 첫 인자는 위치 전용이다.)
+
 ### 로봇 없이 말 걸어보기
 
 ```bash
@@ -201,6 +221,7 @@ brain/                뇌 — AGX에서 돈다
   server.py           웹소켓 전송 계층. 턴 경계·끼어들기·세션 복구·투기적 생성
   pipeline.py         캐스케이드 본체. 오디오 → E4B → 문장 청킹 → Piper. 툴 마크업 파싱
   vad.py              Silero VAD + 하이브리드 종료 판단 (빠른 경로 + 거부권)
+  monitor.py          실시간 모니터 (:8766). 관찰만 하고 대화에 영향 없음
   smart_turn.py       smart-turn-v3 ONNX. Whisper mel을 numpy로 재현(참조와 오차 0.0000)
   backchannel.py      EXP-12. 미리 합성한 "응/어/음"
   fake_robot.py       하드웨어 없이 전체 루프를 돌리는 가짜 로봇
@@ -213,7 +234,7 @@ client/               로봇에 들어가는 것 + 실험 스크립트
   exp12_backchannel.py
 
 scripts/
-  start_brain.sh      ★ 전체 기동. 몇 번 돌려도 안전하다
+  start_brain.sh      ★ 전체 기동. 몇 번 돌려도 안전하다 (코드를 고쳤으면 --restart)
   run_vllm.sh         vLLM 컨테이너. 인자마다 이유가 주석에 있다
   prewarm.py          페르소나 프리필 — 아무도 기다리지 않을 때 18K 값을 치른다
   bench_llm.py        EXP-2 TTFT·디코딩 속도
@@ -222,6 +243,7 @@ scripts/
 
 web/
   test_client.html    브라우저에서 말 걸어보는 페이지 (의존성 없음)
+  monitor.html        ★ 뇌 내부 실시간 대시보드. 뇌 서버가 직접 서빙한다
 
 docs/
   brain_startup.md    재부팅 후 되살리는 법

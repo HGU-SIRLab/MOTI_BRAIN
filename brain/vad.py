@@ -88,6 +88,7 @@ class TurnDetector:
         self._state = np.zeros((2, 1, 128), dtype=np.float32)
         self._context = np.zeros(CONTEXT, dtype=np.float32)
         self._tail = b""                # leftover bytes shorter than one window
+        self.last_prob = 0.0             # 가장 최근 창의 음성 확률 — 관찰용
         self._pre: list[bytes] = []      # ring buffer of pre-speech audio (§11.0-3)
         self._turn: list[bytes] = []
         self._speaking = False
@@ -139,7 +140,8 @@ class TurnDetector:
 
         for i in range(n):
             window = data[i * BYTES_PER_WINDOW:(i + 1) * BYTES_PER_WINDOW]
-            speech = self._prob(window) >= self.threshold
+            self.last_prob = self._prob(window)   # 모니터가 읽는다(brain/monitor.py)
+            speech = self.last_prob >= self.threshold
             self._run = self._run + 1 if speech else 0
 
             if not self._speaking:

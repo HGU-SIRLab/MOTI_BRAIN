@@ -364,7 +364,12 @@ class Session:
                 payload = line[6:]
                 if payload == "[DONE]":
                     break
-                choices = json.loads(payload).get("choices") or []
+                blob = json.loads(payload)
+                if usage := blob.get("usage"):
+                    # `include_usage`로 이미 받고 있었는데 버리고 있었다. 모니터가
+                    # 토큰/초와 프리필 크기를 보여주려면 이게 필요하다.
+                    yield "usage", usage
+                choices = blob.get("choices") or []
                 if not choices:
                     continue
                 delta = choices[0].get("delta") or {}
@@ -449,6 +454,10 @@ class Turn:
             if kind == "error":
                 await emit("error", {"detail": value})
                 break
+            if kind == "usage":
+                self.marks["prompt_tokens"] = value.get("prompt_tokens", 0)
+                self.marks["completion_tokens"] = value.get("completion_tokens", 0)
+                continue
             if kind == "tool_call":
                 # Never fires on vLLM 0.19.0 (delta.tool_calls is always empty) but must
                 # accumulate, not replace: a future vLLM that streams tool calls properly
