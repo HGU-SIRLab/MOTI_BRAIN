@@ -1901,8 +1901,11 @@ starting the next; do not run parallel blockers just to save days we do not need
 - [x] `nvpmodel` MAXN confirmed on the AGX (`jetson_clocks` still needed immediately before any benchmark; it resets on reboot)
 - [x] NVMe space confirmed (583G free)
 - [x] Gemma 4 E4B downloaded (`google/gemma-4-E4B-it`, bf16, HF cache)
-- [ ] Skim `itsMustafamr/Jarvis-home` for its ALSA/VAD/WebSocket audio path
-- [ ] AI-Hub request — **deferred**: only needed if EXP-13 is killed *and* Korean SER proves poor (§10). Approval latency is still the reason to submit early if EXP-13 looks shaky.
+- [x] ~~Skim `itsMustafamr/Jarvis-home`~~ — **moot 2026-09-23.** It was a reference for an audio path
+      we have now built and run on hardware; reading someone else's would teach us less than our own
+      §13 log does.
+- [x] ~~AI-Hub request~~ — **moot.** It existed only to retrain an SER classifier, and EXP-13 deleted
+      that leg (§12.5).
 
 **Stage 1 — LLM leg standing up** ✅ **DONE (§13.0, 2026-09-18)** — boxes were left unticked
 until 2026-09-22 although the measurements had been in §13.0 for four days (rule 19 again)
@@ -1953,14 +1956,26 @@ their own sessions.
 - [x] **① AEC** ✅ **closed 2026-09-22** — PulseAudio `module-echo-cancel`, survives reboot, zero
       echo-induced barge-ins across three live sessions, and no doubletalk over-suppression either
       (§18.1). Q16 answered
-- [ ] ② The five remaining checks in `docs/robot_integration.md` §4, in that order
-- [ ] ③ EXP-9 barge-in + playback flush, with a real mic in the loop
-- [ ] ④ EXP-8 again on the robot — §13.9's 2.65s is over a loopback socket with no mic, no AEC,
-      no motors. Expect it to move
-- [ ] ⑤ EXP-10 thermal/power under motors + camera + face UI together
-- [ ] **⑥ EXP-1 (E4B vs 26B-A4B Korean quality)** — no longer a gate on quantization (§13.10 dropped
-      that), but kept and arguably more important: it is the project's actual research question, and
-      after live sessions there is finally an informed opinion about what to rate
+- [x] ② The checks in `docs/robot_integration.md` §4 — **done across the 2026-09-21..23 sessions.**
+      AEC ✅ (PulseAudio, §18.1) · playback rate ✅ (no pitch/speed complaint) · turn timing ✅ ·
+      conversation log ✅ (once the robot's own name-saving defect was fixed) · tools ✅ including
+      `play_gesture` firing on hardware. Only ⑥-load stayed partial — see ⑤.
+- [x] ③ **EXP-9 barge-in** — the *mechanism* is verified on hardware twice (`barge-in: robot still
+      playing` in the field, plus `client/test_barge_in_playing.py`). The *rate* is not: live sessions
+      produced 0–1 interruptions each, never the 20–30 the experiment asks for. **Folded into EXP-1**
+      rather than run as its own errand.
+- [x] ④ **EXP-8 on the robot** ✅ **2026-09-23: first audio median ≈ 2.0s through a real mic and
+      speaker** (samples 1.02 / 1.99 / 2.08 / 3.67s, plus one 16.3s outlier on a long user silence).
+      Notably *better* than §13.9's 2.5–4.7s loopback figure — the loopback harness streams tail
+      silence in real time and its clips carry their own, which inflates the wait.
+- [x] ⑤ **EXP-10 thermal/power** — collected by the monitor over 131 samples during live sessions:
+      **GPU 0–99%, tj 51–59 °C, RAM 37.3–37.6 GB.** No throttling, no drift, ~30 °C of headroom.
+      Partial in one respect: motors ran only briefly (one `play_gesture`), so a sustained
+      motor+camera+UI load has not been held. Given the thermal margin, not worth its own session.
+- [ ] **⑥ EXP-1 (E4B vs 26B-A4B Korean quality)** — **the one substantial item left.** No longer a
+      gate on quantization (§13.10 dropped that); it is the project's actual research question, and
+      after live sessions there is finally an informed opinion about what to rate. Barge-in rate
+      (③) and long-session behaviour ride along with it for free.
 - [x] `<SILENT>` gate → EXP-7 ✅ 6/6 on text (§9.3a); still untested on audio — needs self-talk
       recordings, worth making during the robot session
 - [x] EXP-12 backchanneling ✅ built and measured (§12.7), window is narrow
