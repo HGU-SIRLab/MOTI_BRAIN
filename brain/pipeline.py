@@ -83,6 +83,11 @@ _BARE_KEY = re.compile(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
 # measurement that settled it.
 SILENT_TOKEN = "<SILENT>"
 
+# 전사 결과에서 잘라낼 우리 쪽 문구들. 모델이 짧은 오디오에서 전사할 게 떨어지면 프롬프트를
+# 이어 뱉는다(§13.17). 사용자 턴의 지시문은 제거했지만, 시스템 프롬프트가 새는 경우까지
+# 대비해 남겨둔다 — 전사는 곧바로 연구 데이터가 된다.
+_PROMPT_LEAK = ("오디오의 발화 내용만", "설명하지 마", "받아적는 전사기", "다른 말은 하지 않는다")
+
 # Control tokens the robot's persona tells the model to emit — `[대화종료]` ends the
 # session, and there may be others we never hear about. They have to reach the robot
 # (`launcher.py` scans `output_transcription` for them, and that is its *only* channel),
@@ -336,9 +341,16 @@ class Session:
         model obeys instructions like "always call set_emotion first" even here, and the
         transcript comes back as "set_emotion(tired)\n며칠 내내..." — polluting the
         conversation log with tool syntax the user never said.
+
+        🔴 **No instruction is appended to the user turn.** It used to end with
+        "이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마." and on short utterances the model
+        ran out of speech to transcribe and **continued our prompt instead**, so the robot
+        logged the user as having said "…이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마."
+        (real session, 2026-09-23). Measured: with a 0.8s clip the leak is reproducible and
+        removing the trailing instruction removes it, while full-length transcripts come
+        back byte-identical either way. The system prompt alone is enough.
         """
-        req = self._post(parts + [{"type": "text",
-                                   "text": "이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마."}],
+        req = self._post(parts,
                          stream=False, max_tokens=256, with_tools=False,
                          # Greedy. 0.7 was applied to every call including this one, which
                          # is sampling noise added to a task that has one right answer —
@@ -349,7 +361,15 @@ class Session:
                          temperature=0.0,
                          system="오디오를 듣고 발화 내용을 그대로 받아적는 전사기다. 다른 말은 하지 않는다.")
         with urllib.request.urlopen(req) as r:
-            return (json.load(r)["choices"][0]["message"].get("content") or "").strip()
+            out = (json.load(r)["choices"][0]["message"].get("content") or "").strip()
+        # 두 번째 방어선: 프롬프트가 어떤 형태로든 결과에 섞이면 거기서 자른다. 전사는
+        # 연구 데이터로 그대로 저장되므로, 우리 문구가 사용자 발화로 남는 건 막아야 한다.
+        for frag in _PROMPT_LEAK:
+            i = out.find(frag)
+            if i != -1:
+                log.warning("transcript leaked the prompt — trimmed at %r", frag[:18])
+                out = out[:i]
+        return out.strip()
 
     def reply_stream(self, parts: list):
         """Yields ('text', str) deltas and ('tool_call', list) as they arrive."""

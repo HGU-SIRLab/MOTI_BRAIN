@@ -356,6 +356,11 @@ class Connection:
         if task is None or turn is None:
             return False
         head = len(out)
+        # 투기적 생성으로 채택된 턴은 run_turn()을 타지 않으므로 turn_start/turn_end가
+        # 안 나갔다 — 로봇이 "10턴 대화에 turn_end가 2개만 온다"고 보고한 게 이것이다
+        # (2026-09-23). 모니터에서 턴 단위 비교를 하려면 여기서도 내보내야 한다.
+        monitor.publish("turn_start", secs=round(len(self._spec_audio) / 2 / 16000, 2),
+                        injected=False, speculated=True)
         for kind, payload in out:
             await self.emit(kind, payload)
         self._spec_live = True               # collector now sends directly
@@ -374,6 +379,9 @@ class Connection:
         await self.send(t="turn_complete")
         log.info("speculation adopted (%d ready, rest streamed)", head)
         monitor.publish("speculation", ready=head)
+        monitor.publish("turn_end", cancelled=turn.cancelled, silent=turn.silent,
+                        speculated=True,
+                        marks={k: round(v, 2) for k, v in turn.marks.items()})
         return True
 
     async def watchdog(self) -> None:

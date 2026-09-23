@@ -150,7 +150,7 @@ function row(ev) {
         body = "🤖 로봇이 시킨 말 — 사용자 발화 아님: "
              + esc((ev.text || "").slice(0, 120));
       } else {
-        body = `오디오 ${ev.secs}초`;
+        body = `오디오 ${ev.secs}초` + (ev.speculated ? '  (투기적 생성)' : '');
       }
       break;
     case "turn_end": {

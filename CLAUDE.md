@@ -1766,6 +1766,46 @@ still matched — which is exactly why it went unnoticed — but claims sourced 
 about an old branch, and line numbers cited from it in `docs/robot_integration.md` should be treated as
 approximate. The robot's report is the authority on the robot's code, not this copy.
 
+### 13.17 🔴 `[MEASURED]` The transcription prompt came back as the user's words (2026-09-23)
+
+Second leak into `input_transcription`, a different path from §13.15's. This one is real mic audio:
+
+```
+{"role":"user", "source":"mic",
+ "text":"마자 정확하게 이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마."}
+```
+
+The user said roughly `"맞아 정확해"`. The rest is **our own transcription prompt**, verbatim.
+
+`transcribe()` appended `{"type":"text", "text":"이 오디오의 발화 내용만 그대로 받아적어. 설명하지
+마."}` after the audio. On a short utterance the model runs out of speech to transcribe and simply
+**continues the prompt**. Measured directly:
+
+| clip | with the trailing instruction | instruction removed |
+|---|---|---|
+| full turn | `물리적인 응답이 안 따라와 주니까…` | **byte-identical** |
+| 0.8s | 🔴 `물리적인 응답이 오디오의 발화 내용만 그대로 받아적어. 설명하지 마.` | `물리적인 응답` |
+
+So the instruction bought nothing and cost this. It is gone; the system prompt (*"오디오를 듣고 발화
+내용을 그대로 받아적는 전사기다"*) already says the same thing from a position the model does not
+continue. A second guard trims any of our own phrasings that still appear, because a transcript
+becomes research data the moment it is written.
+
+**The shape is worth naming.** Both leaks (§13.15, §13.17) are the same mistake seen twice: text we
+wrote for the model came back as text the user supposedly said, and nothing in the system could tell
+the difference. Anything the brain puts in front of the model can return as output — and on the
+transcription path, output is archived as a person's words.
+
+### 13.18 `[MEASURED]` Speculated turns were invisible to the monitor
+
+The robot reported `turn_end` arriving 2–6 times in a 10-turn conversation. `_flush_speculation()`
+adopts a prepared reply and `continue`s — it never calls `run_turn()`, which is where the turn events
+are published. So exactly the turns that went *best* were the ones the monitor could not show. Fixed by
+publishing from the speculation path too, tagged `speculated` so the two are distinguishable.
+
+Low severity, but it would have quietly skewed any per-turn comparison drawn from the monitor — which
+is precisely what it was built for.
+
 **Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
 ~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
 (0.209s warm); decode rate is, and the remaining lever there is prompt-side, not model-side.
@@ -1882,7 +1922,7 @@ until 2026-09-22 although the measurements had been in §13.0 for four days (rul
       optional quality upgrade rather than a risk item. Revisit if the voice disappoints in live use,
       or if emotional speech output (§14) turns out to matter.
 
-**Stage 4 — the pipeline and the wire** (§11) — **everything but the real robot is done**
+**Stage 4 — the pipeline and the wire** (§11) ✅ **DONE 2026-09-23**
 - [x] VAD + smart-turn-v3 on the brain, with the §11.0-3 compensation buffer (§9.1a–e)
 - [x] Brain server: wire protocol per §11.5, conversation state held server-side, resumed across
       reconnects (`client/test_reconnect.py`)
@@ -1891,10 +1931,25 @@ until 2026-09-22 although the measurements had been in §13.0 for four days (rul
 - [x] Instrument every stage from the first commit (§20 rule 5) — §13.2–13.5
 - [x] Fake-robot client for round-trip testing (`brain/fake_robot.py`)
 - [x] The four `[MANDATORY]` items in §11.0, plus item 5 (≤30s clip splitting)
-- [ ] **The real robot on the same LAN** — the only Stage 4 item left, and it is the one that
-      decides whether any of the above survives contact with a microphone (§14 status note)
+- [x] **The real robot on the same LAN** ✅ **2026-09-23.** Closed on the user's call, and the call
+      is right: Stage 4 is "the pipeline and the wire", and both work. Four live sessions ran end to
+      end with no blocker — greeting, tools (including `play_gesture` firing for the first time),
+      transcripts, session logs, clean shutdown. First real mic-to-speaker latency: **median ~2.0s**,
+      better than the 2.5–4.7s loopback figure.
 
-**Stage 5 — behavior and measurement** (ordered 2026-09-19; everything here needs the robot)
+      ⚠️ **What is closing is the stage, not the coverage.** Two paths still have not been exercised
+      on hardware, and they are untested *code*, not unmeasured *numbers*:
+      **barge-in at volume** (sessions saw 0–1 interruptions; the 20–30 of EXP-9 never happened) and
+      **conversations past 20 exchanges** (longest so far: 12 turns, so `max_history=40` has never
+      been crossed). Both fall out of EXP-1 for free — 30 empathy scenarios means long sessions —
+      so they are folded into that rather than run as their own errand. Chasing them separately
+      would cost more than it returns, which is the user's point and it is correct.
+
+**Stage 5 — behavior and measurement** — **re-scoped 2026-09-23.** Closing Stage 4 on working
+behaviour rather than on a full measurement sweep was the user's call and a good one: sessions with a
+person in front of the robot are the scarce resource, and the pipeline had stopped being what limits
+them. What remains here is mostly *numbers*, and numbers can ride along with EXP-1 instead of costing
+their own sessions.
 - [x] **① AEC** ✅ **closed 2026-09-22** — PulseAudio `module-echo-cancel`, survives reboot, zero
       echo-induced barge-ins across three live sessions, and no doubletalk over-suppression either
       (§18.1). Q16 answered
