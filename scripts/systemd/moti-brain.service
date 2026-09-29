@@ -1,0 +1,23 @@
+# 모티 뇌 서버 (:8765 로봇, :8766 모니터) — 사용자 유닛. 설치는 docs/brain_startup.md "자동 기동".
+#
+# vLLM은 여기 없다. 그건 docker 컨테이너이고 --restart unless-stopped로 docker가 올린다.
+# 뇌 서버는 vLLM을 기다리지 않고 먼저 떠도 된다: Piper만 로드하고, 예열(brain/warm.py)은
+# 백그라운드에서 vLLM이 응답할 때까지 기다렸다가 돈다. 그 사이 로봇이 붙으면 턴마다
+# {"t":"error"}가 가고 세션은 살아 있다(§13.7).
+[Unit]
+Description=Moti brain server
+
+[Service]
+WorkingDirectory=/home/herobot/moti_brain
+# 비워야 한다. ROS2/HARU setup이 전역 PYTHONPATH에 HARU venv를 넣어두어 젯슨 torch와 충돌한다.
+# 사용자 매니저는 로그인 셸 환경을 물려받지 않지만, import-environment 같은 걸로 들어올 수
+# 있으니 명시적으로 지운다.
+Environment=PYTHONPATH=
+ExecStart=/home/herobot/moti_brain/.venv_tts/bin/python brain/server.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/herobot/moti_brain/logs/brain.log
+StandardError=append:/home/herobot/moti_brain/logs/brain.log
+
+[Install]
+WantedBy=default.target

@@ -32,7 +32,10 @@ docker rm -f "$NAME" 2>/dev/null || true
 #
 # If that ever happens: do *not* also disable multimodal, which the recipe suggests.
 # Audio input is the primary path since EXP-13 (§12.4); turning it off breaks the input.
-docker run -d --name "$NAME" --runtime=nvidia --network host \
+# --restart unless-stopped: AGX는 24시간 상시 가동이고 사람이 앞에 없을 수 있다. 정전·재부팅
+# 뒤 docker 데몬(systemd enabled)이 이 컨테이너를 다시 올린다. `docker stop`으로 멈춘 건
+# 되살리지 않는다. start_brain.sh는 기동 중인 컨테이너를 기다릴 뿐 다시 만들지 않는다.
+docker run -d --name "$NAME" --restart unless-stopped --runtime=nvidia --network host \
   -v /home/herobot/.cache/huggingface:/root/.cache/huggingface \
   -v "$CACHE":/root/.cache/vllm/torch_compile_cache \
   "$IMAGE" \

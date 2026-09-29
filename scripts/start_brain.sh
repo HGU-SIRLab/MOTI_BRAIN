@@ -39,11 +39,15 @@ say "2/5  vLLM (google/gemma-4-E4B-it)"
 if curl -sf --max-time 5 http://localhost:8000/v1/models >/dev/null 2>&1; then
   ok "이미 응답 중 — 건드리지 않는다"
 else
-  if docker ps -a --format '{{.Names}}' | grep -qx moti_vllm; then
-    echo "  컨테이너는 있으나 응답이 없다. 다시 만든다."
+  # 떠 있는데 응답이 없으면 기동 중이다 — 재부팅 뒤 docker가 restart 정책으로 올린 것이거나
+  # 누가 방금 띄운 것. 여기서 다시 만들면(run_vllm.sh는 rm -f부터 한다) 그 29분을 처음부터
+  # 다시 낸다. 그러니 기다리기만 한다.
+  if docker ps --format '{{.Names}}' | grep -qx moti_vllm; then
+    printf "  컨테이너가 이미 기동 중이다. 기다린다 (처음부터면 \033[33m약 29분\033[0m).\n"
+  else
+    printf "  기동한다. \033[33m약 29분\033[0m 걸린다 (대부분 'model loading' 구간, 원인 미규명=Q17).\n"
+    bash scripts/run_vllm.sh >/dev/null || { no "run_vllm.sh 실패"; exit 1; }
   fi
-  printf "  기동한다. \033[33m약 29분\033[0m 걸린다 (대부분 'model loading' 구간, 원인 미규명=Q17).\n"
-  bash scripts/run_vllm.sh >/dev/null || { no "run_vllm.sh 실패"; exit 1; }
   printf "  대기 중"
   START=$(date +%s)
   until curl -sf --max-time 5 http://localhost:8000/v1/models >/dev/null 2>&1; do
@@ -60,6 +64,17 @@ fi
 # 넣어두어서, 빼면 젯슨 torch와 충돌하는 PyPI 패키지가 보인다(트러블슈팅 메모).
 # pkill은 쓰지 않는다 — 패턴이 자기 셸 명령줄에 걸려 스크립트째로 죽는다(exit 144).
 say "3/5  뇌 서버 (:8765)"
+# systemd 유닛이 설치돼 있으면 그쪽이 주인이다. 여기서 nohup으로 하나 더 띄우면 둘이 포트를
+# 다투고, kill해도 systemd가 5초 뒤 되살려 놓는다. scripts/systemd/ 참고.
+if systemctl --user is-enabled -q moti-brain 2>/dev/null; then
+  if [ "$RESTART" = yes ]; then systemctl --user restart moti-brain; else systemctl --user start moti-brain; fi
+  for _ in $(seq 1 30); do ss -ltn 2>/dev/null | grep -q ':8765' && break; sleep 1; done
+  if ss -ltn 2>/dev/null | grep -q ':8765'; then
+    ok "systemd moti-brain ($(systemctl --user show -p MainPID --value moti-brain))  로그: logs/brain.log"
+  else
+    no "8765가 안 열렸다. systemctl --user status moti-brain"; exit 1
+  fi
+else
 PID=$(pgrep -f "venv_tts/bin/python [b]rain/server.py" || true)
 if [ -n "$PID" ] && [ "$RESTART" = yes ]; then
   echo "  --restart: PID $PID 종료"
@@ -83,10 +98,13 @@ else
     no "8765가 안 열렸다. logs/brain.log 확인"; tail -20 logs/brain.log; exit 1
   fi
 fi
+fi
 
 # --- 4. 예열 -----------------------------------------------------------------
 say "4/5  페르소나 예열"
-PYTHONPATH= .venv_tts/bin/python scripts/prewarm.py "$@" || no "예열 실패 (치명적이지 않음 — 첫 인사가 느려질 뿐)"
+# 로봇이 마지막으로 보낸 페르소나(state/hellos/)를 그대로 데운다. 이름 인자는 더 이상 필요 없다 —
+# 이름으로 페르소나를 재구성하던 옛 방식은 낡은 로봇 사본을 써서 빗나갔다(brain/warm.py 머리말).
+PYTHONPATH= .venv_tts/bin/python brain/warm.py || no "예열 실패 (치명적이지 않음 — 첫 인사가 느려질 뿐)"
 
 # --- 5. 확인 -----------------------------------------------------------------
 say "5/5  최종 확인"

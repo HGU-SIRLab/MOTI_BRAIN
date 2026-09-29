@@ -232,6 +232,7 @@ brain/                뇌 — AGX에서 돈다
   monitor.py          실시간 모니터 (:8766). 관찰만 하고 대화에 영향 없음
   smart_turn.py       smart-turn-v3 ONNX. Whisper mel을 numpy로 재현(참조와 오차 0.0000)
   backchannel.py      EXP-12. 미리 합성한 "응/어/음"
+  warm.py             페르소나 예열. 로봇이 보낸 hello를 state/hellos/에 저장해 두고 그대로 데운다
   fake_robot.py       하드웨어 없이 전체 루프를 돌리는 가짜 로봇
   test_*.py           단위 검사 4종
 
@@ -247,7 +248,7 @@ scripts/
   check_zerotier.sh   ZeroTier 경로 확인 (DIRECT인가 RELAY인가)
   check_tailscale.sh  (참고) Tailscale — 이 네트워크에서는 막혀 있다
   run_vllm.sh         vLLM 컨테이너. 인자마다 이유가 주석에 있다
-  prewarm.py          페르소나 프리필 — 아무도 기다리지 않을 때 18K 값을 치른다
+  systemd/            뇌 서버 사용자 유닛 — 재부팅·크래시 뒤 자동 기동
   bench_llm.py        EXP-2 TTFT·디코딩 속도
   exp13_korean.py     EXP-13 한국어 이해·운율
   probe_audio.py      오디오 토큰 회계와 30초 천장 확인

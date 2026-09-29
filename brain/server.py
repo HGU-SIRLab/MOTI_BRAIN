@@ -27,7 +27,7 @@ import websockets
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from brain.backchannel import Backchannel  # noqa: E402
-from brain import monitor  # noqa: E402
+from brain import monitor, warm  # noqa: E402
 from brain.pipeline import Session, Tts, Turn  # noqa: E402
 from brain.vad import TurnDetector  # noqa: E402
 
@@ -314,6 +314,12 @@ class Connection:
                     if len(SESSIONS) >= MAX_SESSIONS:
                         SESSIONS.pop(next(iter(SESSIONS)))
                     SESSIONS[sid] = self.session
+            # Only the robot's hellos are worth warming. Loopback is our own test clients
+            # (check_all, exp8 --real with the stale clone's persona), and they would push
+            # the real personas out of the KEEP slots.
+            peer = (self.ws.remote_address or ("",))[0]
+            if peer not in ("127.0.0.1", "::1") and len(msg["system"]) >= warm.MIN_CHARS:
+                warm.record(msg["system"], msg.get("tools") or [])
             await self.send(t="ready", resumed=prior is not None,
                             turns=len(self.session.history) // 2)
             log.info("session %s: %s, %d tools, %d turns carried over",
@@ -463,6 +469,9 @@ async def main() -> None:
     log.info("Piper ready (%dHz), %d backchannel clips. listening on ws://%s:%d",
              tts.rate, len(backchannel.clips), HOST, PORT)
     await monitor.start()
+    # Warm the personas the robot sent last time. Waits for vLLM, so on a cold boot this
+    # sits in the background for the ~29 min vLLM takes and fires the moment it is up.
+    asyncio.get_running_loop().run_in_executor(None, warm.warm, True)
     async with websockets.serve(lambda ws: handle(ws, tts, backchannel), HOST, PORT,
                                 max_size=None):      # audio frames are large
         await asyncio.Future()

@@ -1468,6 +1468,12 @@ grep for it and there is nothing. `launcher.py` sends a greeting trigger the mom
 written the robot stands silent for ~14s in front of whoever walked up. Not a regression; a fix that was
 designed and never built.
 
+🔄 *Amended 2026-09-29.* Built since as `scripts/prewarm.py`, and it **missed**: it rebuilt the persona from
+the stale local clone (§13.16), whose text diverges from the robot's at char 592 (1.7%), so an
+unrecognised-face session still waited **21.6s** (session 464842aa, 20,806 prompt tokens). Replaced by
+`brain/warm.py`: the brain saves each robot `hello` (system + tools, as sent) and replays those bytes at
+startup. Same lesson as §13.16 — a copy of the other side's code is a claim about an old branch.
+
 **3. 🔴 Tool markup reached TTS again — three new ways.** Five of eight replies carried it, and
 `_speak()` synthesizes exactly the string it emits as the transcript, so the robot would have read it
 aloud. None of it was reachable with the toy config, which declares no tools.

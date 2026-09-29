@@ -8,3 +8,4 @@ testdata/
 tts_eval/
 models/
 logs/
+state/

@@ -14,11 +14,8 @@ bash /home/herobot/moti_brain/scripts/start_brain.sh
 그냥 다시 돌리면 된다** —
 다 살아 있으면 몇 초 만에 끝나고, 죽은 것만 골라 올린다.
 
-등록된 사용자가 있으면 이름을 넘긴다 (§4 참고):
-
-```bash
-bash scripts/start_brain.sh 조형민
-```
+이름 인자는 더 이상 필요 없다. 예열은 로봇이 실제로 보낸 페르소나를 그대로 쓴다(§4).
+넘겨도 무시된다.
 
 **뇌 서버 코드를 고쳤으면 `--restart`를 붙인다.** 안 붙이면 "이미 떠 있다"로 넘어가서 옛
 프로세스가 그대로 돈다 — 2026-09-22에 그걸로 물렸다. 옛 서버가 포트를 쥔 채 새 서버가
@@ -58,6 +55,54 @@ nvpmodel -q                  # "NV Power Mode: MAXN" 이어야 한다
 sudo nvpmodel -m 0           # 아니면 이걸로 바꾸고 재부팅
 ```
 
+---
+
+## 자동 기동 (2026-09-29부터) — 재부팅 뒤 아무것도 안 해도 된다
+
+AGX는 24시간 상시 가동이고, 로봇은 원격지에서 핫스팟으로 붙을 수 있다. 정전·강제 종료 뒤
+사람이 AGX 앞에 없어도 뇌가 돌아와야 한다.
+
+| 구성요소 | 누가 올리나 | 재부팅 뒤 | 죽으면 |
+|---|---|---|---|
+| `zerotier-one` | systemd (시스템) | ✅ | ✅ |
+| vLLM `moti_vllm` | docker `--restart unless-stopped` | ✅ 약 29분 뒤 응답 | ✅ 다시 29분 |
+| 뇌 서버 | systemd **사용자** 유닛 `moti-brain` + linger | ✅ 수 초 | ✅ 5초 뒤 (실측 8초) |
+| 예열 | 뇌 서버가 기동 때 백그라운드로 | ✅ vLLM이 응답하는 즉시 | — |
+
+**순서 의존이 없다.** 뇌 서버는 vLLM보다 먼저 떠도 된다 — Piper만 로드하고, 예열 스레드는
+vLLM이 응답할 때까지 20초 간격으로 기다린다. 그 29분 사이에 로봇이 붙으면 턴마다
+`{"t":"error"}`가 가고 세션은 살아 있다(스펙 §13.7). 대답을 못 할 뿐 멈추지는 않는다.
+
+설치(한 번만, 2026-09-29에 해뒀다):
+
+```bash
+loginctl enable-linger herobot     # 로그인 없이도 부팅 때 사용자 유닛을 띄운다
+mkdir -p ~/.config/systemd/user
+ln -sf /home/herobot/moti_brain/scripts/systemd/moti-brain.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now moti-brain
+docker update --restart unless-stopped moti_vllm   # run_vllm.sh로 새로 만들면 이미 붙어 있다
+```
+
+유닛은 저장소의 파일을 심볼릭 링크로 가리키므로 **유닛을 고치면 `systemctl --user
+daemon-reload`**. 서버 코드를 고쳤으면 전처럼 `start_brain.sh --restart` — 유닛이 있으면
+스크립트가 알아서 `systemctl --user restart`로 넘긴다. **유닛이 있는데 손으로 `nohup`으로 또
+띄우지 말 것** — 둘이 포트를 다투고, 손으로 kill해도 systemd가 되살린다.
+
+```bash
+systemctl --user status moti-brain     # 상태
+systemctl --user stop moti-brain       # 정말 멈추고 싶을 때 (kill은 5초 뒤 되살아난다)
+docker stop moti_vllm                  # vLLM을 멈추면 재부팅해도 안 뜬다(unless-stopped)
+```
+
+**여기서 못 푸는 것**: AGX 전원 자체가 나가면 원격 복구는 불가능하다. 전원이 돌아왔을 때
+보드가 스스로 켜지는지는 **확인하지 않았다** — 젯슨 개발 키트에는 PC 같은 BIOS 옵션이 없고
+캐리어 보드 설정에 달려 있다. 가장 확실한 확인은 AGX 앞에서 전원 케이블을 뽑았다 꽂아보고,
+약 30분 뒤 로봇에서 붙어보는 것이다.
+
+`jetson_clocks`는 자동 기동에 넣지 않았다 — 아래 §1 이유 그대로, 운영값이 곧 측정 기준선이다.
+
+---
+
 MAXN은 저장되는 설정이라 재부팅해도 유지된다.
 
 `sudo jetson_clocks`는 **유지되지 않고 재부팅마다 풀린다.** 스크립트는 이걸 자동으로 걸지
@@ -92,6 +137,9 @@ cd /home/herobot/moti_brain
 PYTHONPATH= nohup .venv_tts/bin/python brain/server.py >> logs/brain.log 2>&1 &
 ```
 
+⚠️ **systemd 유닛이 설치된 뒤로는 이렇게 띄우지 않는다** — 위 "자동 기동" 참고. 아래는 유닛
+없이 손으로 돌릴 때의 기록이다.
+
 🔴 **`PYTHONPATH=` 를 반드시 붙인다.** ROS2/HARU setup이 전역 `PYTHONPATH`에 HARU의 venv를
 넣어두어서, 빼면 젯슨 torch와 충돌하는 PyPI 패키지가 보이고 `undefined symbol`로 죽는다.
 이 프로젝트의 파이썬·pip은 **항상** 이 접두사를 붙여 실행한다.
@@ -105,21 +153,27 @@ kill "$(pgrep -f 'venv_tts/bin/python [b]rain/server.py')"
 
 ### 4. 페르소나 예열
 
+뇌 서버가 기동 때 스스로 한다. 손으로 다시 돌리려면(예: vLLM만 재시작했을 때):
+
 ```bash
-PYTHONPATH= .venv_tts/bin/python scripts/prewarm.py            # 미지 사용자
-PYTHONPATH= .venv_tts/bin/python scripts/prewarm.py 조형민       # 등록 사용자도 함께
+PYTHONPATH= .venv_tts/bin/python brain/warm.py
 ```
+
+**2026-09-29에 방식을 바꿨다.** 이전 `scripts/prewarm.py`는 로컬의 MOTI-HRI 사본으로 페르소나를
+재구성했는데 그 사본이 `jetson-moti`(2026-09-03)에 멈춰 있어서, 로봇의 실제 페르소나와
+**592자(1.7%) 지점부터 달랐다.** 예열이 거의 적중하지 않았고 얼굴 인식이 실패한 세션이 인사까지
+21.6초를 기다렸다(세션 464842aa). 지금은 뇌가 **로봇이 보낸 hello를 `state/hellos/`에 그대로
+저장**하고(시스템 프롬프트 + 툴 스키마, 최근 3개), 예열은 그걸 재생한다. 바이트가 같으니 반드시
+적중하고, 기억된 facts가 있는 등록 사용자도 같이 데워진다.
+
+한계: **로봇이 한 번은 붙어야 기록이 생긴다.** 로봇 쪽 페르소나 코드가 바뀐 직후의 첫 세션은
+여전히 차갑다. 루프백 접속(검사 스크립트)과 5,000자 미만의 짧은 페르소나는 기록하지 않는다 —
+실제 페르소나를 슬롯에서 밀어낼 뿐이다. `state/`는 사용자 facts가 들어 있어 gitignore다.
 
 **안 하면 로봇 앞의 첫 사람이 약 17.9초를 기다린다.** 18,344토큰 페르소나의 프리필 값이고,
 `launcher.py`는 연결하자마자 인사 턴을 밀어넣으므로 그 침묵이 사람 앞에서 그대로 흐른다.
 예열은 아무도 없을 때 그 값을 미리 치르는 것이다. vLLM의 prefix 캐시는 GPU에 있고
 **프로세스가 사는 동안 유지**되므로 한 번이면 된다.
-
-무엇이 데워지는가:
-- **미지 사용자**(`name=None`) — 얼굴 인식 실패/미등록 경로. 바이트 단위로 재현 가능한
-  고정 문자열이라 확실하게 적중한다
-- **이름을 넘긴 사용자** — 다만 그 사람에게 기억된 사실(`facts_summary`)이 있으면
-  빗나간다. 그 값은 로봇 디스크의 프로필에서 오고 AGX에서는 재현할 수 없다
 
 이름과 facts가 프롬프트의 **1.17% / 3.54% 지점**에 들어가서, 다르면 18,400토큰 중 200~650개만
 공유된다. 즉 **사람이 바뀌면 사실상 전부 다시 계산한다.** KV 예산은 페르소나 3.7개분뿐이라
@@ -174,7 +228,7 @@ PYTHONPATH= .venv_tts/bin/python client/test_local_live.py
 | `ModuleNotFoundError` | `PYTHONPATH=` 를 빠뜨렸다 |
 | `undefined symbol` (torch 관련) | 같은 원인. PyPI torch가 젯슨 torch를 가린 것 |
 | 8765는 열렸는데 응답이 없다 | vLLM이 죽었을 수 있다. 뇌 서버는 vLLM 없이도 떠 있는다 |
-| 첫 인사가 계속 느리다 | 예열이 빗나간 것. 얼굴 인식이 이름을 찾아냈다면 그 이름으로 예열해야 한다 |
+| 첫 인사가 계속 느리다 | `ls -lt state/hellos/` — 그 페르소나가 기록돼 있나. 처음 보는 사람이거나 로봇 페르소나가 막 바뀌었으면 첫 세션만 느리다 |
 | 셸이 exit 144로 죽었다 | `pkill -f` 를 썼다. 위 §3의 `pgrep` + `kill` 방식으로 |
 
 컨테이너를 지워야 한다면 **컴파일 캐시부터 꺼낸다** (마운트를 빠뜨린 채 띄웠던 경우):
