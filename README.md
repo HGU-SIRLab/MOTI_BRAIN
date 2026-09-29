@@ -198,6 +198,12 @@ python3 -m http.server 8000
 ### 검사
 
 ```bash
+bash scripts/check_all.sh            # 10종 한 번에 (--exp8 붙이면 지연까지)
+```
+
+개별로 돌리려면:
+
+```bash
 PYTHONPATH= .venv_tts/bin/python brain/test_pipeline.py       # 문장 분할·툴 파싱·전체 왕복
 PYTHONPATH= .venv_tts/bin/python brain/test_vad.py            # 턴 감지 (분할 예산)
 PYTHONPATH= .venv_tts/bin/python brain/test_smart_turn.py     # 분리도 유지 여부
@@ -237,6 +243,9 @@ client/               로봇에 들어가는 것 + 실험 스크립트
 
 scripts/
   start_brain.sh      ★ 전체 기동. 몇 번 돌려도 안전하다 (코드를 고쳤으면 --restart)
+  check_all.sh        ★ 검사 10종 한 번에
+  check_zerotier.sh   ZeroTier 경로 확인 (DIRECT인가 RELAY인가)
+  check_tailscale.sh  (참고) Tailscale — 이 네트워크에서는 막혀 있다
   run_vllm.sh         vLLM 컨테이너. 인자마다 이유가 주석에 있다
   prewarm.py          페르소나 프리필 — 아무도 기다리지 않을 때 18K 값을 치른다
   bench_llm.py        EXP-2 TTFT·디코딩 속도
