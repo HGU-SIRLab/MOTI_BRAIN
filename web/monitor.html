@@ -54,6 +54,7 @@
   .tag.turn_start, .tag.turn_end { color:var(--accent); }
   .tag.connect, .tag.speculation, .tag.backchannel { color:var(--dim); }
   .tag.injected { color:var(--warn); }
+  .tag.send_slow { color:var(--bad); }
   .marks { color:var(--dim); }
   .marks b { color:var(--ink); }
   label.chk { color:var(--dim); font-size:12px; display:inline-flex; gap:5px; align-items:center; }
@@ -100,6 +101,7 @@
       <div class="kv"><span>툴 호출</span><b id="ntool">0</b></div>
       <div class="kv"><span>취소된 턴</span><b id="ncancel">0</b></div>
       <div class="kv"><span>오류</span><b id="nerr">0</b></div>
+      <div class="kv"><span>전송 정체</span><b id="nslow">0</b></div>
     </div>
 
     <div class="card">
@@ -125,7 +127,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const n = { turns:0, barge:0, bargep:0, tool:0, cancel:0, err:0 };
+const n = { turns:0, barge:0, bargep:0, tool:0, cancel:0, err:0, slow:0 };
 let ws, lastMarks = null;
 
 function esc(s){ return String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])); }
@@ -168,6 +170,10 @@ function row(ev) {
     }
     case "bargein":
       body = ev.during === "playing" ? "로봇이 재생 중 — 버퍼 비우라고 지시" : "생성 중 턴 취소";
+      break;
+    case "send_slow":
+      tag = "send_slow";
+      body = `🐌 오디오 전송이 ${ev.ms}ms 막혔다 (${ev.bytes}B) — 전송 정체`;
       break;
     case "backchannel": body = `맞장구 (침묵 ${ev.after}초)`; break;
     case "speculation": body = `투기적 생성 채택 (준비된 문장 ${ev.ready})`; break;
@@ -221,6 +227,7 @@ function apply(ev) {
       break;
     case "tool_call": n.tool += ev.calls.length; $("ntool").textContent = n.tool; break;
     case "error": n.err++; $("nerr").textContent = n.err; break;
+    case "send_slow": n.slow++; $("nslow").textContent = n.slow; break;
     case "connect": $("peer").textContent = "로봇 " + ev.peer; break;
     case "disconnect": $("peer").textContent = "로봇 연결 끊김"; break;
     case "vllm":
