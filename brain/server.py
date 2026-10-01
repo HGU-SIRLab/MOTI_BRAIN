@@ -62,9 +62,6 @@ STALL_TIMEOUT = 6.0
 # interrupt. Overshooting instead costs a spurious `interrupted` that flushes an already
 # empty buffer, so the error is worth taking in this direction.
 PLAYBACK_SLACK = 1.0
-# Sent once after tool results when the model has not spoken yet; never stored.
-FOLLOW_UP_NUDGE = ("(위 도구 실행 결과에 지시가 있으면 그대로 따르세요. "
-                   "말하지 말라는 지시면 정확히 <SILENT>만 출력하세요.)")
 
 log = logging.getLogger("brain")
 
@@ -189,7 +186,7 @@ class Connection:
             if not turn.cancelled:
                 await self.send(t="turn_complete")
 
-    async def collect_tool_results(self, turn: Turn, calls: list) -> None:
+    async def collect_tool_results(self, turn: Turn, calls: list, depth: int = 0) -> None:
         """Wait for the robot to run the tools, then let the model speak again only if
         it has not spoken yet.
 
@@ -212,16 +209,33 @@ class Connection:
 
         if turn.spoke or turn.cancelled:
             return
-        # The results are already in history as tool messages (on_text). The nudge rides
-        # only on this request: without it the model talked straight through
-        # "[OK] 침묵. 대기." (4/4, measured 2026-10-01); with it, 8/8 stayed silent and
-        # start_quiz's 5-item briefing was still spoken 4/4. No length cap — a result can
-        # itself be the instruction, and "한두 문장" would cut the briefing short.
+        # Continue from the tool messages — no injected user turn. Measured 2026-10-01
+        # night on the robot's quiz persona: a user-turn nudge after set_emotion made the
+        # model say nothing or call stray tools (submit_guess, end_quiz_early), and the
+        # quiz went silent (c2fd968f). As a plain continuation it speaks after set_emotion
+        # and start_quiz, and stays silent after "[OK] 침묵. 대기.".
         follow = Turn(self.session, self.tts, b"")
         follow.follow_up = True
-        follow.parts = [{"type": "text", "text": FOLLOW_UP_NUDGE}]
+        follow.parts = []
         self.current = follow
-        await follow.run(self.emit)
+        fcalls: list = []
+
+        async def emit(kind: str, payload: dict) -> None:
+            if kind == "tool_call":
+                fcalls.extend(payload["calls"])
+            await self.emit(kind, payload)
+
+        await follow.run(emit)
+        # The robot can only see that nothing was said; "silent on purpose" and "said
+        # nothing" differ, so say which.
+        log.info("follow-up after %s: %s%s",
+                 ",".join(r.get("name") or "?" for r in results),
+                 "spoke" if follow.spoke else ("<SILENT>" if follow.silent else "nothing"),
+                 f", called {','.join(c['name'] for c in fcalls)}" if fcalls else "")
+        # It may call another tool first (set_emotion, then speak) — the same round trip
+        # again. Bounded: a model that only ever calls tools must not loop forever.
+        if fcalls and not (follow.spoke or follow.silent or follow.cancelled) and depth < 2:
+            await self.collect_tool_results(follow, fcalls, depth + 1)
 
     # ---- inbound --------------------------------------------------------
     async def on_binary(self, pcm: bytes) -> None:

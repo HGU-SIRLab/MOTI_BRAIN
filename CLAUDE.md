@@ -1872,6 +1872,32 @@ hold → reveal). With a toy persona it only catches the silence half; **the sta
 persona**, so the test takes a recorded hello as an argument (`state/hellos/*.json`, not in the public repo).
 Seventh instance of §20 rule 20: no test had ever carried a tool call across turns.
 
+### 13.21 🔴 `[MEASURED]` §13.20 broke speech; fixed — and its "9/9" was a text-only number (2026-10-01 night)
+
+Robot session `c2fd968f` on 3da968a: after `start_quiz`, every turn was `set_emotion` alone (15 tokens) and silence.
+
+**Cause.** With calls in history as `tool_calls` + `tool` messages, the model does what function-calling models do:
+call, then **stop and wait for the result**. `set_emotion` became a turn of its own, so nearly every turn depended
+on the follow-up — and §13.20's follow-up was a *user-turn* nudge ("결과에 지시가 있으면 따르고, 말하지 말라면
+<SILENT>"). After `emotion set to neutral` there is no instruction, so the model said nothing or called stray
+tools (`submit_guess`, `end_quiz_early` — logged). Found by dumping the requests the server actually sends; a
+hand-built history behaved fine, which is why §13.20 missed it.
+
+**Fix.** The follow-up is now a plain continuation from the tool messages (no user message), repeated up to two
+more times if the model only calls another tool. Real quiz persona, text answers: asks, grades, holds and
+reveals correctly in 8 of 9 runs (≈26/27 graded); the follow-up log (`follow-up after …: spoke/<SILENT>/nothing`)
+makes the outcome visible to the robot side.
+
+**Cost: first audio 1.93s → 3.03s median** (n=12, real persona, text turns) — the extra round trip after
+`set_emotion`. Partly offset by a finding: with calls dropped from history (9d9d070) the model had **stopped calling
+`set_emotion` after turn 2**, so the face never changed; the faster number was partly a broken feature. Keeping
+spoken turns' calls inline (no round trip) measured 2.23s but could not be validated (below). **Open.**
+
+**Correction to §13.20.** Its "9/9" used *text* answers. The robot sends speech. Answers synthesized with Piper
+are not a substitute — it is Moti's own voice, and the model answered "저는 로봇 모티야." — so spoken grading is
+**unmeasured**. `client/test_quiz_flow.py` uses `testdata/quiz_answer{1,2,3}.*` when they exist; they need a
+person's voice.
+
 **Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
 ~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
 (0.209s warm); decode rate is, and the remaining lever there is prompt-side, not model-side.

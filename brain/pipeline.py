@@ -378,8 +378,10 @@ class Session:
         if system is not None:
             return [{"role": "system", "content": system},
                     {"role": "user", "content": parts}]
-        return [{"role": "system", "content": self.system}, *self._history(),
-                {"role": "user", "content": parts}]
+        # No parts = a continuation after tool results: the model answers the tool
+        # messages at the end of history, the standard function-calling round trip.
+        tail = [{"role": "user", "content": parts}] if parts else []
+        return [{"role": "system", "content": self.system}, *self._history(), *tail]
 
     def _post(self, parts: list, *, stream: bool, max_tokens: int,
               with_tools: bool, system: str | None = None,
@@ -434,7 +436,7 @@ class Session:
 
     def reply_stream(self, parts: list, suffix: bool = True):
         """Yields ('text', str) deltas and ('tool_call', list) as they arrive."""
-        tail = [{"type": "text", "text": "방금 한 말에 반응해줘."}] if suffix else []
+        tail = [{"type": "text", "text": "방금 한 말에 반응해줘."}] if suffix and parts else []
         req = self._post(parts + tail,
                          stream=True, max_tokens=256, with_tools=True)
         pending: dict[int, dict] = {}
@@ -497,8 +499,8 @@ class Turn:
         self.cancelled = False
         self.spoke = False                  # did the user actually hear anything?
         self.silent = False                 # model chose not to answer (§9.3)
-        # A follow-up after tool results: `parts` is a one-off nudge that is *not* stored —
-        # history already ends in the tool messages, which is what the model answers.
+        # A follow-up after tool results: no new user message (`parts` is empty); the model
+        # continues from the tool messages at the end of history.
         self.follow_up = False
         self.marks: dict[str, float] = {}   # §20 rule 5: instrument from the first commit
 
@@ -529,7 +531,7 @@ class Turn:
         # it before generating cost 2.4s of pure silence in the first measurement. Start it
         # alongside the reply and collect it before `done`, which is when launcher.py needs
         # it (it builds turn_user, then reads it at turn_complete).
-        transcript_task = (None if injected is not None else
+        transcript_task = (None if injected is not None or self.follow_up else
                            loop.run_in_executor(None, self.session.transcribe, self.parts))
 
         queue: asyncio.Queue = asyncio.Queue()
@@ -632,6 +634,14 @@ class Turn:
         # nothing on spoken turns — calls already waited for the last sentence.
         # History before the call goes out: the robot answers at once, and its result is
         # placed next to the assistant message that made the call (add_tool_results).
+        # ⚠️ Cost, measured 2026-10-01: with calls in history as tool_calls + tool
+        # messages, the model stops after set_emotion and waits for the result, so most
+        # turns need a follow-up generation — first audio 1.93s → 3.03s median (n=12).
+        # (The 1.93s was partly flattering: with calls dropped from history the model had
+        # stopped calling set_emotion after turn 2, so the face never changed.) Keeping
+        # calls inline instead measured 2.23s, but graded 0/6 spoken quiz answers vs 2/9
+        # here — on answers voiced by Piper, i.e. Moti's own voice, which the model
+        # treats as itself. That test is not valid; real recordings will decide this.
         self.session.remember(None if self.follow_up else user_text, full, calls)
         if calls:
             await emit("tool_call", {"calls": calls})

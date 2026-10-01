@@ -22,7 +22,12 @@ import json
 import sys
 import uuid
 
+import subprocess
+from pathlib import Path
+
 import websockets
+
+ROOT = Path(__file__).resolve().parent.parent
 
 URI = "ws://127.0.0.1:8765"
 SYSTEM = ("너는 로봇 모티야. 지금은 사진 퀴즈 중이다. 사용자가 사진에 대해 답을 말하면 "
@@ -40,9 +45,47 @@ ITEMS = [("브로콜리", "음 나무처럼 보이는데"), ("빨래집게", "�
          ("우산", "이거 우산 아니야?")]
 
 
-async def turn(ws, text: str, on_call=None) -> tuple[list, str]:
-    """Send one text turn; answer tool calls; return (calls, what Moti said)."""
-    await ws.send(json.dumps({"t": "text", "text": text}))
+def result_for(c: dict) -> str:
+    # What the robot actually returns. "ok" for everything else was too kind: the
+    # regression of 2026-10-01 night (quiz went silent after start_quiz) only shows up
+    # once set_emotion is answered the way the robot answers it.
+    if c["name"] == "submit_guess":
+        return HOLD
+    if c["name"] == "set_emotion":
+        return f"emotion set to {(c.get('args') or {}).get('emotion')}"
+    return "ok"
+
+
+def speech(k: int) -> bytes | None:
+    """A recorded answer for question k (`testdata/quiz_answer{k}.*`), as 16kHz mic audio
+    plus 3s of silence to end the turn — or None, and the answer goes in as text.
+
+    Text is not what the robot sends, and it shows: the brain suffixes injected text
+    with "방금 한 말에 반응해줘." and the model sometimes answers *that* instead of
+    grading. Answers synthesized with Piper were tried and are worse than useless — it is
+    Moti's own voice, and the model replied "저는 로봇 모티야." (2026-10-01). It needs a
+    person's voice: record the three answers in ITEMS.
+    """
+    src = next((ROOT / "testdata").glob(f"quiz_answer{k}.*"), None)
+    if src is None:
+        return None
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(src), "-map", "0:a:0", "-vn",
+                          "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
+                         check=True, capture_output=True).stdout
+    return pcm + b"\0" * 32000 * 3
+
+
+async def turn(ws, text: str, pcm: bytes | None = None) -> tuple[list, str]:
+    """One turn — injected text, or mic audio streamed in real time; answer tool calls;
+    return (calls, what Moti said)."""
+    if pcm is None:
+        await ws.send(json.dumps({"t": "text", "text": text}))
+    else:
+        async def stream() -> None:
+            for i in range(0, len(pcm), 3200):
+                await ws.send(pcm[i:i + 3200])
+                await asyncio.sleep(0.1)
+        sender = asyncio.create_task(stream())
     calls, said = [], ""
     async for raw in ws:
         if isinstance(raw, bytes):
@@ -50,14 +93,17 @@ async def turn(ws, text: str, on_call=None) -> tuple[list, str]:
         m = json.loads(raw)
         if m["t"] == "transcript" and m["role"] == "model":
             said += m["text"]
+        elif m["t"] == "transcript" and m["role"] == "user":
+            print(f"     (들은 말: {m['text']!r})")
         elif m["t"] == "tool_call":
             calls += m["calls"]
             await ws.send(json.dumps({"t": "tool_result", "results": [
-                {"id": c["id"], "name": c["name"],
-                 "result": HOLD if c["name"] == "submit_guess" else "ok"}
+                {"id": c["id"], "name": c["name"], "result": result_for(c)}
                 for c in m["calls"]]}))
         elif m["t"] in ("turn_complete", "error"):
-            return calls, said.strip()
+            break
+    if pcm is not None:
+        sender.cancel()
     return calls, said.strip()
 
 
@@ -71,25 +117,31 @@ async def main() -> None:
     async with websockets.connect(URI, max_size=None) as ws:
         await ws.send(json.dumps({"t": "hello", "system": SYSTEM, "tools": TOOLS,
                                   "session_id": uuid.uuid4().hex,
-                                  "backchannel": False, "speculate": False}))
+                                  "backchannel": False}))
         assert json.loads(await ws.recv())["t"] == "ready"
         for k, (answer, guess) in enumerate(ITEMS, 1):
             ordinal = "첫 문제" if k == 1 else "다음 문제"
-            await asyncio.wait_for(turn(ws, f'(진행자 지시: 화면에 {ordinal}({k}/3)가 떴습니다. '
-                                            '"이 물건은 무엇일까요?"라고 물어보세요.)'), 60)
-            calls, said = await asyncio.wait_for(turn(ws, guess), 60)
+            _, asked = await asyncio.wait_for(turn(ws, f'(진행자 지시: 화면에 {ordinal}({k}/3)가 떴습니다. '
+                                                       '"이 물건은 무엇일까요?"라고 물어보세요.)'), 60)
+            print(f"  {k}번 문제 제시: {asked!r}")
+            if not asked:
+                failures.append(f"{k}번: 문제를 묻는 턴에서 아무 말도 안 했다")
+            calls, said = await asyncio.wait_for(turn(ws, guess, speech(k)), 60)
             graded = any(c["name"] == "submit_guess" for c in calls)
             print(f"  {k}번 '{guess}': submit_guess={'O' if graded else 'X'}  말한 것={said!r}")
             if not graded:
                 failures.append(f"{k}번 문제에서 submit_guess를 안 불렀다")
             if graded and said:
                 failures.append(f"{k}번: 침묵 지시를 받고도 말했다 — {said!r}")
-            await asyncio.wait_for(turn(ws, f"(진행자 지시: 정답은 {answer}입니다. 정답을 알려주고 "
-                                            "짧게 반응하세요. 다음 문제를 미리 묻지 마세요.)"), 60)
+            _, revealed = await asyncio.wait_for(turn(ws, f"(진행자 지시: 정답은 {answer}입니다. 정답을 "
+                                                          "알려주고 짧게 반응하세요. 다음 문제를 미리 묻지 마세요.)"), 60)
+            print(f"  {k}번 정답 공개: {revealed!r}")
+            if not revealed:
+                failures.append(f"{k}번: 정답 공개 턴에서 아무 말도 안 했다")
     if failures:
         print("\n실패:\n  " + "\n  ".join(failures))
         sys.exit(1)
-    print("\n퀴즈 3문항: 매번 채점 툴 호출, 침묵 지시 준수")
+    print("\n퀴즈 3문항: 묻고, 채점 툴을 부르고, 판정 직후엔 침묵하고, 정답을 말한다")
 
 
 if __name__ == "__main__":
