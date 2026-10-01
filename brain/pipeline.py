@@ -541,8 +541,6 @@ class Turn:
             buf = ""
 
         full = " ".join(spoken).strip()
-        if calls and not self.cancelled:
-            await emit("tool_call", {"calls": calls})
 
         if transcript_task is None:
             # Injected turn: history still needs the prompt Moti was answering, but the
@@ -555,6 +553,14 @@ class Turn:
             return
         if transcript_task is not None:
             await emit("transcript", {"role": "user", "text": user_text})
+        # Tool calls go out *after* the user transcript — Gemini's order, and the robot's
+        # quiz code depends on it: `_NO_USER_SPEECH_GUARD` rejects a `submit_guess` made
+        # before the user has said anything for this question (added after the model
+        # graded two answers nobody gave, 2026-08-10). With calls first, it rejected a real
+        # answer and the quiz stalled on question 1 (robot report, 2026-10-01). Costs
+        # nothing on spoken turns — calls already waited for the last sentence.
+        if calls:
+            await emit("tool_call", {"calls": calls})
         self.session.remember(user_text, full)
         await emit("done", {"text": full, "marks": self.marks})
 

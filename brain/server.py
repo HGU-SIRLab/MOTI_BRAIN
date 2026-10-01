@@ -100,6 +100,7 @@ class Connection:
         self._spec_task: asyncio.Task | None = None
         self._spec_audio: bytes = b""       # the audio it was generated from
         self._spec_out: list[tuple[str, dict]] = []
+        self._spec_calls: list = []
         self._spec_live = False             # confirmed: stop buffering, stream instead
         self._last_audio = 0.0
         # When the robot should finish playing what we have already sent. The brain
@@ -150,6 +151,12 @@ class Connection:
                             source="mic" if payload["role"] == "user" else "tts")
             await self.send(t="transcript", role=payload["role"], text=payload["text"])
         elif kind == "tool_call":
+            # Arm the result slot *before* sending. It used to be created afterwards, in
+            # collect_tool_results, after the turn finished its transcript — so a robot
+            # that answered at once (it does) hit an empty slot, the result was dropped,
+            # and the turn sat out the 10s timeout with no follow-up.
+            if self.tool_results is None or self.tool_results.done():
+                self.tool_results = asyncio.get_running_loop().create_future()
             monitor.publish("tool_call", calls=payload["calls"])
             await self.send(t="tool_call", calls=payload["calls"])
         elif kind == "error":
@@ -199,9 +206,11 @@ class Connection:
         the same response. The case that actually breaks is when the model returns *only*
         a tool call: then the user hears nothing at all. That is the one we generate for.
         """
-        self.tool_results = asyncio.get_running_loop().create_future()
+        # Armed in emit() when the call went out; the result may already be in it.
+        fut = self.tool_results or asyncio.get_running_loop().create_future()
+        self.tool_results = fut
         try:
-            results = await asyncio.wait_for(self.tool_results, TOOL_RESULT_TIMEOUT)
+            results = await asyncio.wait_for(fut, TOOL_RESULT_TIMEOUT)
         except asyncio.TimeoutError:
             log.warning("tool results timed out after %.0fs", TOOL_RESULT_TIMEOUT)
             return
@@ -213,7 +222,10 @@ class Connection:
         summary = ", ".join(f"{r.get('name')}={r.get('result')}" for r in results)
         follow = Turn(self.session, self.tts, b"")
         follow.parts = [{"type": "text",
-                         "text": f"(도구 실행 결과: {summary}) 이어서 사용자에게 한두 문장으로 말해줘."}]
+                         # No length cap here. A tool result can itself be the instruction
+                         # (start_quiz: "5개 항목 안내를 빠짐없이"), and "한두 문장" would
+                         # override it. The persona already keeps ordinary replies short.
+                         "text": f"(도구 실행 결과: {summary}) 이어서 사용자에게 말해줘."}]
         self.current = follow
         await follow.run(self.emit)
 
@@ -341,7 +353,9 @@ class Connection:
         # attribute meant that reassigning it in _flush_speculation left the collector
         # appending into a fresh list, and the prepared reply arrived as 0 events.
         buffer: list[tuple[str, dict]] = []
+        calls: list = []
         self._spec, self._spec_audio, self._spec_out = turn, audio, buffer
+        self._spec_calls = calls
         self._spec_live = False
 
         async def collect(kind: str, payload: dict) -> None:
@@ -349,6 +363,8 @@ class Connection:
             # for the whole turn before releasing anything made first-audio *worse* than
             # no speculation at all: the first sentence is normally out in ~1.4s, but
             # holding everything until the last sentence finished pushed it past 3.5s.
+            if kind == "tool_call":
+                calls.extend(payload["calls"])
             if self._spec_live:
                 await self.emit(kind, payload)
             else:
@@ -365,10 +381,12 @@ class Connection:
         self._spec = self._spec_task = None
         self._spec_audio = b""
         self._spec_out = []
+        self._spec_calls = []
 
     async def _flush_speculation(self) -> bool:
         """Adopt the in-flight reply: send what is ready, then let the rest stream."""
         task, turn, out = self._spec_task, self._spec, self._spec_out
+        calls = self._spec_calls
         if task is None or turn is None:
             return False
         head = len(out)
@@ -383,12 +401,20 @@ class Connection:
         self.current = turn                  # so barge-in can still cancel it
         try:
             await task
+            # Same as run_turn. This was missing, so a speculated turn that came back as
+            # *only* a tool call got no follow-up: `turn_complete` went out at once, the
+            # robot's tool_result arrived to nobody, and the user heard nothing. The quiz
+            # lost its whole 5-item briefing that way — `start_quiz` returns the briefing
+            # as an instruction (robot report, 2026-10-01, session 3031b800).
+            if calls and not turn.cancelled:
+                await self.collect_tool_results(turn, calls)
         except asyncio.CancelledError:
             return False
         finally:
             self.current = None
             self._spec = self._spec_task = None
             self._spec_out = []
+            self._spec_calls = []
             self._spec_live = False
         if turn.cancelled:
             return False

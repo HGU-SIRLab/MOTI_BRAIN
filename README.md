@@ -198,7 +198,7 @@ python3 -m http.server 8000
 ### 검사
 
 ```bash
-bash scripts/check_all.sh            # 10종 한 번에 (--exp8 붙이면 지연까지)
+bash scripts/check_all.sh            # 11종 한 번에 (--exp8 붙이면 지연까지)
 ```
 
 개별로 돌리려면:
@@ -244,7 +244,7 @@ client/               로봇에 들어가는 것 + 실험 스크립트
 
 scripts/
   start_brain.sh      ★ 전체 기동. 몇 번 돌려도 안전하다 (코드를 고쳤으면 --restart)
-  check_all.sh        ★ 검사 10종 한 번에
+  check_all.sh        ★ 검사 11종 한 번에
   check_zerotier.sh   ZeroTier 경로 확인 (DIRECT인가 RELAY인가)
   check_tailscale.sh  (참고) Tailscale — 이 네트워크에서는 막혀 있다
   run_vllm.sh         vLLM 컨테이너. 인자마다 이유가 주석에 있다

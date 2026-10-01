@@ -1812,6 +1812,33 @@ publishing from the speculation path too, tagged `speculated` so the two are dis
 Low severity, but it would have quietly skewed any per-turn comparison drawn from the monitor — which
 is precisely what it was built for.
 
+### 13.19 🔴 `[MEASURED]` First quiz on the local brain stalled at question 1 — three brain bugs (2026-10-01)
+
+Robot session `3031b800`, `QUIZ_EXPERIMENT_MODE=true`, 10 tools. `start_quiz` fired correctly and the first
+picture showed; then two failures, both brain-side, and a third found while writing the test.
+
+| # | symptom | cause |
+|---|---|---|
+| 1 | `start_quiz` returned its 5-item briefing as an instruction; the user heard nothing | the turn was **speculated**, and `_flush_speculation` never ran `collect_tool_results` — `turn_complete` went out at once and the robot's `tool_result` reached nobody. `run_turn` had it; the speculation path, added later, did not |
+| 2 | `submit_guess` arrived **before** the user transcript, so the robot's `_NO_USER_SPEECH_GUARD` rejected a real answer; the model then never re-called it and the state machine sat on question 1 | `Turn.run` emitted `tool_call` before awaiting the transcript. Gemini's order is transcript → tool call, and the guard (added after the model graded two unanswered questions, 2026-08-10) depends on it |
+| 3 | not seen live; reproduced by the test | the result slot (`tool_results` future) was created *after* the turn finished, so a robot answering at once lost its result and the turn waited out the 10s timeout |
+
+Fixes: tool calls now go out after the user transcript (no cost on spoken turns — they already waited for the
+last sentence); the speculation path collects tool results like `run_turn`; the slot is armed in `emit()`
+before the call is sent. The follow-up prompt also lost its "한두 문장" cap — a tool result can itself be the
+instruction, and the cap would have truncated the briefing even once it ran.
+
+`client/test_tool_turn_order.py` forces a tool-only reply and checks transcript → tool_call → follow-up speech
+→ `turn_complete` with speculation on **and** off. It failed all four assertions against the old server.
+
+Sixth instance of §20 rule 20, and the cleanest: every earlier tool test had the model *speak* alongside
+its call, so the tool-only path — the one `collect_tool_results` exists for — had never run through
+speculation, and no test client had ever answered a tool call as fast as the robot does.
+
+Side finding: the greeting took 5.1s although the persona was recorded for prewarm. The robot's persona
+embeds the current month ("현재는 **9월**" → "**10월**") at 51% of its length, so the first session after a
+month (or week-number) change is half-cold once. Expected behaviour of byte-exact prewarming, not a bug.
+
 **Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
 ~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
 (0.209s warm); decode rate is, and the remaining lever there is prompt-side, not model-side.

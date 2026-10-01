@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 검사 10종을 한 번에. 뇌 서버와 vLLM이 떠 있어야 한다.
+# 검사 11종을 한 번에. 뇌 서버와 vLLM이 떠 있어야 한다.
 #
 # 이 파일이 저장소에 있는 이유: 그동안 세션마다 임시 디렉토리에 같은 걸 다시 만들어 쓰고
 # 있었고, 세션이 끝나면 사라졌다. 검사 목록 자체가 프로젝트 자산이라 여기 둔다.
@@ -34,6 +34,7 @@ run "주입 턴이 사용자 발화로 안 돌아오나" client/test_injected_tu
 run "launcher 수신 루프 재현"           client/test_local_live.py
 run "재연결 후 대화 복구"               client/test_reconnect.py
 run "재생 중 끼어들기"                  client/test_barge_in_playing.py 400
+run "툴만 부른 턴: 순서·후속 발화"      client/test_tool_turn_order.py 300
 
 if [ "${1:-}" = "--exp8" ]; then
   printf '\n\033[1m=== EXP-8 지연 (실제 페르소나 18,344토큰 + 툴) ===\033[0m\n'
@@ -43,6 +44,6 @@ if [ "${1:-}" = "--exp8" ]; then
 fi
 
 printf '\n======================================\n'
-if [ "$fail" -eq 0 ]; then printf '\033[32m전부 통과 (10종)\033[0m\n'
+if [ "$fail" -eq 0 ]; then printf '\033[32m전부 통과 (11종)\033[0m\n'
 else printf '\033[31m실패한 항목: %d\033[0m\n' "$fail"; fi
 exit "$fail"
