@@ -305,11 +305,72 @@ class Session:
     # `facts`, which the robot re-injects through the persona.
     max_history: int = 40           # 20 exchanges
 
-    def remember(self, user: str, assistant: str) -> None:
-        self.history += [{"role": "user", "content": user},
-                         {"role": "assistant", "content": assistant}]
+    def remember(self, user: str | None, assistant: str, calls: list = ()) -> None:
+        """Record a turn. Tool calls are kept as OpenAI `tool_calls`, not dropped.
+
+        They used to be dropped, so a turn that was *only* a tool call went into history as
+        the user answering and Moti saying nothing. After one such quiz answer the model
+        learned the pattern: the next answers got a 1-token empty reply, no `submit_guess`,
+        and the quiz stalled on question 2 (robot report 2026-10-01, session fa0f5948).
+        Replayed offline with the robot's quiz persona: submit_guess 3/15 with the old
+        history, 15/15 with the call and its result recorded as tool messages.
+
+        `user=None` is a follow-up after tool results: there is no new user message.
+        """
+        if user is not None:
+            self.history.append({"role": "user", "content": user})
+        msg: dict = {"role": "assistant", "content": assistant}
+        if calls:
+            msg["tool_calls"] = [
+                {"id": c["id"], "type": "function",
+                 "function": {"name": c["name"],
+                              "arguments": json.dumps(c.get("args") or {},
+                                                      ensure_ascii=False)}}
+                for c in calls]
+        if user is not None or assistant or calls:
+            self.history.append(msg)
         if len(self.history) > self.max_history:
             del self.history[:len(self.history) - self.max_history]
+            # Never start on an orphaned assistant/tool message.
+            while self.history and self.history[0]["role"] != "user":
+                del self.history[0]
+
+    def add_tool_results(self, results: list) -> None:
+        """Place each result right after the assistant message that made the call."""
+        for r in results:
+            rid = r.get("id")
+            for i in range(len(self.history) - 1, -1, -1):
+                ids = [c["id"] for c in self.history[i].get("tool_calls") or []]
+                if rid in ids:
+                    j = i + 1
+                    while j < len(self.history) and self.history[j]["role"] == "tool":
+                        j += 1
+                    self.history.insert(j, {"role": "tool", "tool_call_id": rid,
+                                            "name": r.get("name") or "",
+                                            "content": str(r.get("result"))})
+                    break
+
+    def _history(self) -> list:
+        """History as sent: a call whose result never came gets a placeholder, so the
+        template never sees a dangling tool_call (timeouts, a dropped link)."""
+        out: list = []
+        for i, m in enumerate(self.history):
+            out.append(m)
+            calls = m.get("tool_calls") or []
+            if not calls:
+                continue
+            answered = set()
+            j = i + 1
+            while j < len(self.history) and self.history[j]["role"] == "tool":
+                answered.add(self.history[j].get("tool_call_id"))
+                j += 1
+            for c in calls:
+                if c["id"] not in answered:
+                    out.append({"role": "tool", "tool_call_id": c["id"],
+                                "name": c["function"]["name"], "content": "(결과 없음)"})
+        # placeholders were appended right after the assistant; real ones follow it —
+        # both orders are valid tool blocks, the template only needs them adjacent.
+        return out
 
     def _messages(self, parts: list, system: str | None = None) -> list:
         # A transcription call passes its own system prompt and skips history: it must
@@ -317,7 +378,7 @@ class Session:
         if system is not None:
             return [{"role": "system", "content": system},
                     {"role": "user", "content": parts}]
-        return [{"role": "system", "content": self.system}, *self.history,
+        return [{"role": "system", "content": self.system}, *self._history(),
                 {"role": "user", "content": parts}]
 
     def _post(self, parts: list, *, stream: bool, max_tokens: int,
@@ -371,9 +432,10 @@ class Session:
                 out = out[:i]
         return out.strip()
 
-    def reply_stream(self, parts: list):
+    def reply_stream(self, parts: list, suffix: bool = True):
         """Yields ('text', str) deltas and ('tool_call', list) as they arrive."""
-        req = self._post(parts + [{"type": "text", "text": "방금 한 말에 반응해줘."}],
+        tail = [{"type": "text", "text": "방금 한 말에 반응해줘."}] if suffix else []
+        req = self._post(parts + tail,
                          stream=True, max_tokens=256, with_tools=True)
         pending: dict[int, dict] = {}
         with urllib.request.urlopen(req) as r:
@@ -435,6 +497,9 @@ class Turn:
         self.cancelled = False
         self.spoke = False                  # did the user actually hear anything?
         self.silent = False                 # model chose not to answer (§9.3)
+        # A follow-up after tool results: `parts` is a one-off nudge that is *not* stored —
+        # history already ends in the tool messages, which is what the model answers.
+        self.follow_up = False
         self.marks: dict[str, float] = {}   # §20 rule 5: instrument from the first commit
 
     def cancel(self) -> None:
@@ -471,7 +536,8 @@ class Turn:
 
         def pump() -> None:
             try:
-                for kind, value in self.session.reply_stream(self.parts):
+                for kind, value in self.session.reply_stream(self.parts,
+                                                             suffix=not self.follow_up):
                     if self.cancelled:
                         break
                     loop.call_soon_threadsafe(queue.put_nowait, (kind, value))
@@ -512,12 +578,17 @@ class Turn:
                                 c["name"], ", ".join(missing))
                     continue
                 calls.append(c)
-            if SILENT_TOKEN in clean:
-                clean = clean.replace(SILENT_TOKEN, "")
-                self.silent = True
-            if not clean.strip():
+            if not clean:
                 continue
+            # Checked on the accumulated buffer, not the delta: the token can arrive split
+            # ("<SIL" + "ENT>"), and the per-delta check let it through whole — the robot
+            # got "<SILENT>" as Moti's transcript (found 2026-10-01 by test_quiz_flow).
             buf += clean
+            if SILENT_TOKEN in buf:
+                buf = buf.replace(SILENT_TOKEN, "")
+                self.silent = True
+            if not buf.strip():
+                continue
             if "first_token" not in self.marks:
                 self.marks["first_token"] = time.perf_counter() - t0
             # Synthesize each completed sentence immediately (§11.0-2) — waiting for the
@@ -559,9 +630,11 @@ class Turn:
         # graded two answers nobody gave, 2026-08-10). With calls first, it rejected a real
         # answer and the quiz stalled on question 1 (robot report, 2026-10-01). Costs
         # nothing on spoken turns — calls already waited for the last sentence.
+        # History before the call goes out: the robot answers at once, and its result is
+        # placed next to the assistant message that made the call (add_tool_results).
+        self.session.remember(None if self.follow_up else user_text, full, calls)
         if calls:
             await emit("tool_call", {"calls": calls})
-        self.session.remember(user_text, full)
         await emit("done", {"text": full, "marks": self.marks})
 
     async def _speak(self, sentence: str, emit, t0: float) -> None:

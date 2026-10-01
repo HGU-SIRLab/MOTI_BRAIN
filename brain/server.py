@@ -62,6 +62,9 @@ STALL_TIMEOUT = 6.0
 # interrupt. Overshooting instead costs a spurious `interrupted` that flushes an already
 # empty buffer, so the error is worth taking in this direction.
 PLAYBACK_SLACK = 1.0
+# Sent once after tool results when the model has not spoken yet; never stored.
+FOLLOW_UP_NUDGE = ("(위 도구 실행 결과에 지시가 있으면 그대로 따르세요. "
+                   "말하지 말라는 지시면 정확히 <SILENT>만 출력하세요.)")
 
 log = logging.getLogger("brain")
 
@@ -209,13 +212,14 @@ class Connection:
 
         if turn.spoke or turn.cancelled:
             return
-        summary = ", ".join(f"{r.get('name')}={r.get('result')}" for r in results)
+        # The results are already in history as tool messages (on_text). The nudge rides
+        # only on this request: without it the model talked straight through
+        # "[OK] 침묵. 대기." (4/4, measured 2026-10-01); with it, 8/8 stayed silent and
+        # start_quiz's 5-item briefing was still spoken 4/4. No length cap — a result can
+        # itself be the instruction, and "한두 문장" would cut the briefing short.
         follow = Turn(self.session, self.tts, b"")
-        follow.parts = [{"type": "text",
-                         # No length cap here. A tool result can itself be the instruction
-                         # (start_quiz: "5개 항목 안내를 빠짐없이"), and "한두 문장" would
-                         # override it. The persona already keeps ordinary replies short.
-                         "text": f"(도구 실행 결과: {summary}) 이어서 사용자에게 말해줘."}]
+        follow.follow_up = True
+        follow.parts = [{"type": "text", "text": FOLLOW_UP_NUDGE}]
         self.current = follow
         await follow.run(self.emit)
 
@@ -330,6 +334,8 @@ class Connection:
         elif kind == "text":
             await self.turns.put(msg["text"])
         elif kind == "tool_result":
+            if self.session is not None:
+                self.session.add_tool_results(msg.get("results") or [])
             if self.tool_results and not self.tool_results.done():
                 self.tool_results.set_result(msg.get("results") or [])
         else:

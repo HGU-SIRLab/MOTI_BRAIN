@@ -1839,6 +1839,39 @@ Side finding: the greeting took 5.1s although the persona was recorded for prewa
 embeds the current month ("현재는 **9월**" → "**10월**") at 51% of its length, so the first session after a
 month (or week-number) change is half-cold once. Expected behaviour of byte-exact prewarming, not a bug.
 
+### 13.20 🔴 `[MEASURED]` History dropped every tool call — the quiz then stopped grading (2026-10-01 evening)
+
+Robot session `fa0f5948`, after §13.19's fixes. The briefing and question 1 were fine (graded, guard passed). From
+question 2 on, every answer got a **1-token empty reply**: no speech, no `submit_guess`. The state machine stalled.
+
+**Cause.** `Session.remember()` stored only the spoken text, so a turn that was *only* a tool call entered
+history as *user answers → Moti says nothing*. The follow-up added another pair, "(도구 실행 결과: … [OK] 침묵.
+대기.) 이어서 말해줘" → "". By question 2 the model was following the pattern it had been shown.
+
+| replay with the robot's real quiz persona (recorded hello) | submit_guess on the next answer |
+|---|---|
+| old history (calls dropped), vLLM direct, n=21 | **6/21**, the rest mostly a 1-token empty reply |
+| calls as `tool_calls` + results as `tool` messages, n=21 | **21/21** |
+| through the server, old code, 3 runs × questions 2–3 | **0/6** — exactly the robot's symptom |
+| through the server, new code, 3 runs × 3 questions | **9/9** |
+
+**Fix.** History now keeps calls as OpenAI `tool_calls` on the assistant message and results as `tool`
+messages placed right after it (`add_tool_results`, on arrival); a call whose result never came gets a
+placeholder at request time so the template never sees a dangling call. The follow-up no longer injects a
+user turn into history: it answers the tool messages, with a one-off nudge that is not stored.
+
+The nudge is load-bearing, measured: answering the tool message alone, the model talked straight through
+"[OK] 침묵. 대기." **4/4** — the 8/10 failure in the other direction. With "결과의 지시를 따르고, 말하지 말라면
+<SILENT>" it stayed silent **8/8** and still delivered start_quiz's 5-item briefing **4/4**.
+
+Found on the way: `<SILENT>` was detected per stream delta, so a token split as `<SIL` + `ENT>` went to the
+robot as Moti's transcript. Now checked on the accumulated buffer.
+
+`client/test_quiz_flow.py` runs three questions the way the robot does (question → answer → `submit_guess` →
+hold → reveal). With a toy persona it only catches the silence half; **the stall itself needs the real
+persona**, so the test takes a recorded hello as an argument (`state/hellos/*.json`, not in the public repo).
+Seventh instance of §20 rule 20: no test had ever carried a tool call across turns.
+
 **Escalation** (v5, now largely closed): E4B TTFT consistently >700ms → ~~MTP~~ (blocked, §13.6) →
 ~~QAT~~ (dropped, §13.10) → shorten context → consider E2B. In practice TTFT was never the problem
 (0.209s warm); decode rate is, and the remaining lever there is prompt-side, not model-side.
