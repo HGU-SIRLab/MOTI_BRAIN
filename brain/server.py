@@ -62,16 +62,6 @@ STALL_TIMEOUT = 6.0
 # interrupt. Overshooting instead costs a spurious `interrupted` that flushes an already
 # empty buffer, so the error is worth taking in this direction.
 PLAYBACK_SLACK = 1.0
-# 오디오 한 조각을 소켓에 밀어 넣는 데 이만큼 넘게 걸리면 전송이 막히고 있다는 뜻이다.
-# 왜 필요한가: 중계(TCP) 구간의 head-of-line blocking을 로봇의 재생 언더런으로 판정하려
-# 했는데, 로봇 쪽에서 **코골이 클립이 같은 버퍼를 쓰면서 언더런으로 계수된다**는 걸 찾았다
-# (2026-09-29 보고: 언더런 횟수가 SLEEPY 횟수와 함께 움직였다). 그래서 언더런은 전송 품질의
-# 깨끗한 지표가 아니다.
-#
-# 여기서 재는 값은 오염되지 않는다. 링크가 건강하면 `ws.send()`는 커널 버퍼에 복사하고 바로
-# 돌아오므로 0에 가깝다. TCP 창이 막히면 그 자리에서 기다리게 되고, 그게 곧 전송 정체다.
-# 코골이도 SLEEPY도 이 값에 영향을 주지 않는다.
-SEND_SLOW = 0.10
 
 log = logging.getLogger("brain")
 
